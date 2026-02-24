@@ -131,6 +131,9 @@ dmypy.json
 /overcooked_ai_py/agents/old/
 /overcooked_ai_py/mdp/old/
 
+# Git worktrees
+.worktrees/
+
 # IDES
 **/.vscode/
 .idea/
