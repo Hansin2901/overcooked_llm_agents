@@ -33,13 +33,27 @@ class LLMAgent(Agent):
         horizon: episode length (for display in state serialization)
     """
 
-    def __init__(self, model_name="gpt-4o", debug=False, horizon=None):
+    def __init__(self, model_name="gpt-4o", debug=False, horizon=None, history_size=10):
         self.model_name = model_name
         self.debug = debug
         self.horizon = horizon
+        self.history_size = history_size
+        self._history = []
         self._graph = None
         self._system_prompt = None
         super().__init__()
+
+    def _format_history(self):
+        """Format history entries for display to LLM."""
+        if not self._history or self.history_size == 0:
+            return ""
+
+        lines = ["RECENT HISTORY:"]
+        for entry in self._history:
+            lines.append(
+                f"- Step {entry['timestep']}: \"{entry['reasoning']}\" → {entry['action']}"
+            )
+        return "\n".join(lines)
 
     def set_mdp(self, mdp):
         """Initialize serializer, tools, and build LangGraph.
