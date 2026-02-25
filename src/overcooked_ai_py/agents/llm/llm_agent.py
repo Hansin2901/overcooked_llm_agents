@@ -142,15 +142,33 @@ class LLMAgent(Agent):
         # Update tool context
         set_state(state, self.agent_index)
 
+        # Build history text
+        history_text = self._format_history()
+
+        # Construct prompt with history
+        if history_text:
+            prompt = f"{history_text}\n\nCurrent game state:\n{state_text}\n\nDecide your action."
+        else:
+            prompt = f"Current game state:\n{state_text}\n\nDecide your action."
+
         # Run LangGraph agent
         from langchain_core.messages import HumanMessage, SystemMessage
 
         messages = [
             SystemMessage(content=self._system_prompt),
-            HumanMessage(content=f"Current game state:\n{state_text}\n\nDecide your action."),
+            HumanMessage(content=prompt),
         ]
 
-        result = self._graph.invoke({"messages": messages})
+        # Execute graph with error handling
+        try:
+            result = self._graph.invoke({"messages": messages})
+            reasoning = self._extract_reasoning(result["messages"])
+        except Exception as e:
+            # Graph failed - log warning and use fallback
+            if self.debug:
+                print(f"  [LLMAgent] Graph execution failed: {e}")
+            reasoning = "(graph execution failed)"
+            result = None
 
         # Extract the action from the tool module
         chosen = get_chosen_action()
@@ -159,6 +177,9 @@ class LLMAgent(Agent):
             if self.debug:
                 print(f"  [LLMAgent] No action tool called, defaulting to STAY")
             chosen = Action.STAY
+
+        # Store in history
+        self._add_to_history(state.timestep, reasoning, chosen)
 
         if self.debug:
             action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
