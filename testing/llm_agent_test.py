@@ -121,5 +121,57 @@ class TestLLMAgentMemory(unittest.TestCase):
         self.assertEqual(len(agent._history), 0)
 
 
+
+class TestLLMAgentMemoryIntegration(unittest.TestCase):
+    """Integration tests for memory system."""
+
+    def test_memory_accumulates_across_actions(self):
+        """History accumulates across multiple action calls."""
+        from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
+        from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
+        from unittest.mock import Mock, patch
+
+        # Create a simple test environment
+        mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        env = OvercookedEnv.from_mdp(mdp, horizon=10)
+
+        # Create agent with small history
+        agent = LLMAgent(model_name="gpt-4o", debug=False, history_size=3)
+
+        # Mock the graph to avoid actual LLM calls
+        with patch.object(agent, '_graph') as mock_graph:
+            # Setup mock to return valid result
+            from langchain_core.messages import AIMessage
+            mock_graph.invoke.return_value = {
+                "messages": [
+                    AIMessage(
+                        content="Test reasoning",
+                        tool_calls=[{"name": "wait", "args": {}, "id": "1"}]
+                    )
+                ]
+            }
+
+            # Set up agent
+            agent.set_agent_index(0)
+            agent.set_mdp(mdp)
+            env.reset()
+
+            # Mock get_chosen_action to return STAY
+            from overcooked_ai_py.mdp.actions import Action
+            with patch('overcooked_ai_py.agents.llm.llm_agent.get_chosen_action', return_value=Action.STAY):
+                # Take several actions
+                state = env.state
+                for i in range(5):
+                    agent.action(state)
+                    state.timestep = i + 1  # Increment timestep
+
+                # Should have 3 entries (history_size limit)
+                self.assertEqual(len(agent._history), 3)
+
+                # Should have most recent entries
+                self.assertEqual(agent._history[0]["timestep"], 2)
+                self.assertEqual(agent._history[-1]["timestep"], 4)
+
+
 if __name__ == "__main__":
     unittest.main()
