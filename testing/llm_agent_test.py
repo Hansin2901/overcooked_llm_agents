@@ -99,6 +99,14 @@ class TestLLMAgentMemory(unittest.TestCase):
         result = agent._extract_reasoning([])
         self.assertEqual(result, "(no messages returned)")
 
+    def test_history_size_configurable(self):
+        """History size can be configured via constructor."""
+        agent = LLMAgent(history_size=5)
+        self.assertEqual(agent.history_size, 5)
+
+        agent2 = LLMAgent()  # Default
+        self.assertEqual(agent2.history_size, 10)
+
 
 if __name__ == "__main__":
     unittest.main()
