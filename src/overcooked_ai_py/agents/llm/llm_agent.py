@@ -71,6 +71,38 @@ class LLMAgent(Agent):
         if len(self._history) > self.history_size:
             self._history = self._history[-self.history_size:]
 
+    def _extract_reasoning(self, messages):
+        """Extract reasoning text from LLM's final decision.
+
+        Returns the content of the AIMessage that called an action tool,
+        or a descriptive fallback if extraction fails.
+        """
+        from langchain_core.messages import AIMessage
+        from overcooked_ai_py.agents.llm.tools import ACTION_TOOL_NAMES
+
+        if not messages:
+            return "(no messages returned)"
+
+        try:
+            # Look backwards for AIMessage with action tool call
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage):
+                    # Check if this message called an action tool
+                    if msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            if tc["name"] in ACTION_TOOL_NAMES:
+                                # Found action decision
+                                return msg.content.strip() if msg.content else "(no reasoning provided)"
+                    # Fallback to any AIMessage content
+                    elif msg.content:
+                        return msg.content.strip()
+
+            return "(no reasoning found)"
+        except Exception as e:
+            if self.debug:
+                print(f"  [LLMAgent] Reasoning extraction failed: {e}")
+            return "(extraction failed)"
+
     def set_mdp(self, mdp):
         """Initialize serializer, tools, and build LangGraph.
 

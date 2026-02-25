@@ -60,6 +60,45 @@ class TestLLMAgentMemory(unittest.TestCase):
         self.assertEqual(agent._history[0]["timestep"], 2)
         self.assertEqual(agent._history[-1]["timestep"], 4)
 
+    def test_extract_reasoning_from_action_message(self):
+        """Extracts reasoning from AIMessage with action tool call."""
+        from langchain_core.messages import AIMessage
+        from overcooked_ai_py.agents.llm.tools import ACTION_TOOL_NAMES
+
+        agent = LLMAgent(history_size=5)
+
+        messages = [
+            AIMessage(
+                content="I'll move up to the pot",
+                tool_calls=[{"name": "move_up", "args": {}, "id": "1"}]
+            )
+        ]
+
+        result = agent._extract_reasoning(messages)
+        self.assertEqual(result, "I'll move up to the pot")
+
+    def test_extract_reasoning_empty_content(self):
+        """Returns fallback when content is empty."""
+        from langchain_core.messages import AIMessage
+
+        agent = LLMAgent(history_size=5)
+
+        messages = [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "move_up", "args": {}, "id": "1"}]
+            )
+        ]
+
+        result = agent._extract_reasoning(messages)
+        self.assertEqual(result, "(no reasoning provided)")
+
+    def test_extract_reasoning_no_messages(self):
+        """Returns fallback when no messages."""
+        agent = LLMAgent(history_size=5)
+        result = agent._extract_reasoning([])
+        self.assertEqual(result, "(no messages returned)")
+
 
 if __name__ == "__main__":
     unittest.main()
