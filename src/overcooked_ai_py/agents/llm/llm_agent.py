@@ -172,3 +172,4 @@ class LLMAgent(Agent):
         super().reset()
         self._graph = None
         self._system_prompt = None
+        self._history = []  # Clear history

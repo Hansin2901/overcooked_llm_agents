@@ -107,6 +107,19 @@ class TestLLMAgentMemory(unittest.TestCase):
         agent2 = LLMAgent()  # Default
         self.assertEqual(agent2.history_size, 10)
 
+    def test_reset_clears_history(self):
+        """Reset clears history for new episode."""
+        from overcooked_ai_py.mdp.actions import Direction
+
+        agent = LLMAgent(history_size=5)
+        agent._add_to_history(1, "Test", Direction.NORTH)
+
+        self.assertEqual(len(agent._history), 1)
+
+        agent.reset()
+
+        self.assertEqual(len(agent._history), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
