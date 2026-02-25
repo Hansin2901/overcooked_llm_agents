@@ -55,6 +55,22 @@ class LLMAgent(Agent):
             )
         return "\n".join(lines)
 
+    def _add_to_history(self, timestep, reasoning, action):
+        """Add entry to history and maintain size limit."""
+        from overcooked_ai_py.mdp.actions import Action
+
+        action_name = Action.ACTION_TO_CHAR.get(action, str(action))
+
+        self._history.append({
+            "timestep": timestep,
+            "reasoning": reasoning,
+            "action": action_name,
+        })
+
+        # Trim to history_size
+        if len(self._history) > self.history_size:
+            self._history = self._history[-self.history_size:]
+
     def set_mdp(self, mdp):
         """Initialize serializer, tools, and build LangGraph.
 
