@@ -60,3 +60,8 @@ packages = { find = { where = ["src"] } }
     "ppo/trained_example/*/.tune_metadata",
     "ppo/trained_example/*/checkpoint-500",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
