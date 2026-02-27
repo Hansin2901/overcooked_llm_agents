@@ -288,6 +288,7 @@ YOUR ROLE:
 
 GAME RULES:
 - Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- CRITICAL: Each worker can hold ONLY ONE ITEM at a time. They must put down what they're holding before picking up something else.
 - INTERACT action: picks up items, places items, starts interactions. Must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, orientation updates).
 - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
@@ -367,6 +368,7 @@ YOUR ROLE:
 
 GAME RULES:
 - Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- CRITICAL: You can hold ONLY ONE ITEM at a time. You must put down what you're holding (on a counter or in a pot) before picking up something else.
 - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
 - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
