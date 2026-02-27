@@ -233,3 +233,163 @@ STRATEGY TIPS:
 - Deliver soup: carry soup to a serving location, face it, INTERACT.
 
 Each turn you receive the current game state. You may use observation tools to gather info, then MUST call exactly one action tool to make your move."""
+
+
+def build_planner_system_prompt(mdp, worker_ids, horizon=None):
+    """Build the system prompt for the planner LLM.
+
+    The planner coordinates multiple workers by assigning them complementary tasks.
+    Workers cannot communicate with each other, so tasks must be self-contained.
+
+    Args:
+        mdp: OvercookedGridworld instance
+        worker_ids: list of worker identifiers (e.g., ["worker_0", "worker_1"])
+        horizon: total episode length
+
+    Returns:
+        str: system prompt for the planner
+    """
+    # Build terrain grid
+    grid_lines = []
+    for y in range(mdp.height):
+        row = ""
+        for x in range(mdp.width):
+            row += mdp.terrain_mtx[y][x]
+        grid_lines.append(row)
+    grid_str = "\n".join(grid_lines)
+
+    # Key locations
+    locations = []
+    for name, getter in [
+        ("Pots", mdp.get_pot_locations),
+        ("Onion dispensers", mdp.get_onion_dispenser_locations),
+        ("Tomato dispensers", mdp.get_tomato_dispenser_locations),
+        ("Dish dispensers", mdp.get_dish_dispenser_locations),
+        ("Serving locations", mdp.get_serving_locations),
+    ]:
+        locs = getter()
+        if locs:
+            locations.append(f"  {name}: {locs}")
+
+    locations_str = "\n".join(locations) if locations else "  (none listed)"
+
+    horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
+
+    # Format worker list
+    workers_str = "\n".join(f"  - {wid}" for wid in worker_ids)
+
+    return f"""You are the PLANNER in a cooperative cooking game called Overcooked. You coordinate multiple workers to efficiently make and deliver soups.
+
+YOUR ROLE:
+- Assign complementary tasks to workers to maximize team efficiency
+- Workers CANNOT communicate with each other - each must work independently on their assigned task
+- You reassign tasks periodically based on game state and progress
+- Think strategically about task allocation and coordination
+
+GAME RULES:
+- Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- INTERACT action: picks up items, places items, starts interactions. Must be FACING the target square.
+- To face a direction, move in that direction (even if blocked, orientation updates).
+- Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+LAYOUT:
+{grid_str}
+Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+
+KEY LOCATIONS:
+{locations_str}
+
+AVAILABLE WORKERS:
+{workers_str}
+
+COORDINATION STRATEGY:
+- Divide labor: assign workers to different subtasks (e.g., one gathers ingredients, one handles delivery)
+- Avoid conflicts: workers can't see each other's tasks, so assign spatially separated goals when possible
+- Balance workload: ensure no worker is idle while others are overloaded
+- Adapt dynamically: reassign tasks when workers complete objectives or when game state changes
+- Consider pot timing: coordinate ingredient gathering with pot availability
+
+TASK ASSIGNMENT GUIDELINES:
+- Be specific: "Gather 3 onions and put them in the pot at (2, 1)" not just "gather onions"
+- Be self-contained: workers can't ask each other questions or coordinate directly
+- Include location info: specify which dispenser, pot, or serving location to use
+- Prioritize completion: ensure tasks have clear end conditions
+
+Each turn you receive the game state. Analyze progress and assign or update tasks for your workers."""
+
+
+def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):
+    """Build the system prompt for a worker LLM.
+
+    Workers execute tasks assigned by the planner. They don't know about other workers.
+
+    Args:
+        mdp: OvercookedGridworld instance
+        agent_index: which player we are (0 or 1)
+        worker_id: identifier for this worker (e.g., "worker_0")
+        horizon: total episode length
+
+    Returns:
+        str: system prompt for the worker
+    """
+    # Build terrain grid
+    grid_lines = []
+    for y in range(mdp.height):
+        row = ""
+        for x in range(mdp.width):
+            row += mdp.terrain_mtx[y][x]
+        grid_lines.append(row)
+    grid_str = "\n".join(grid_lines)
+
+    # Key locations
+    locations = []
+    for name, getter in [
+        ("Pots", mdp.get_pot_locations),
+        ("Onion dispensers", mdp.get_onion_dispenser_locations),
+        ("Tomato dispensers", mdp.get_tomato_dispenser_locations),
+        ("Dish dispensers", mdp.get_dish_dispenser_locations),
+        ("Serving locations", mdp.get_serving_locations),
+    ]:
+        locs = getter()
+        if locs:
+            locations.append(f"  {name}: {locs}")
+
+    locations_str = "\n".join(locations) if locations else "  (none listed)"
+
+    horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
+
+    return f"""You are {worker_id}, a chef in Overcooked. You are Player {agent_index}.
+
+YOUR ROLE:
+- Execute the task assigned to you by your coordinator
+- Focus on completing your current task efficiently
+- Navigate the kitchen and interact with objects to accomplish your goal
+
+GAME RULES:
+- Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
+- To face a direction, move in that direction (even if blocked, your orientation updates).
+- Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+LAYOUT:
+{grid_str}
+Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+
+KEY LOCATIONS:
+{locations_str}
+
+ACTION GUIDE:
+- To pick up an onion: stand adjacent to an onion dispenser, face it, then INTERACT.
+- To pick up a tomato: stand adjacent to a tomato dispenser, face it, then INTERACT.
+- To place ingredient in pot: stand adjacent to a pot, face it, then INTERACT.
+- When pot has 3 ingredients, it starts cooking automatically (no action needed).
+- To get soup from ready pot: pick up a dish first, then stand adjacent to pot facing it, INTERACT.
+- To pick up a dish: stand adjacent to dish dispenser, face it, INTERACT.
+- To deliver soup: carry soup to a serving location, face it, INTERACT.
+
+NAVIGATION TIPS:
+- You'll see another entity (@) in the kitchen - navigate around them if they're blocking your path
+- If your path is blocked, find an alternate route or wait briefly
+- Always ensure you're facing the correct direction before interacting
+
+Each turn you receive the current game state and your assigned task. Use observation tools to gather info, then MUST call exactly one action tool to make your move."""
