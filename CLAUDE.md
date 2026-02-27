@@ -113,6 +113,10 @@ OPENAI_API_KEY=sk-...
 - `--model MODEL`: LiteLLM model name (default: from LLM_MODEL env or "gpt-4o")
 - `--layout LAYOUT`: Kitchen layout (default: "cramped_room")
 - `--horizon N`: Episode length in timesteps (default: 200)
+- `--agent-type {llm,planner-worker}`: Agent architecture (default: "llm")
+  - `llm`: Single LLMAgent paired with GreedyHumanModel partner
+  - `planner-worker`: Hierarchical planner coordinating two LLM workers
+- `--replan-interval N`: Steps between replanning (planner-worker mode only, default: 5)
 - `--debug`: Print LLM reasoning for each decision
 - `--visualize`: Show real-time pygame visualization window
 - `--fps N`: Frames per second for visualization (default: 2)
@@ -124,8 +128,27 @@ OPENAI_API_KEY=sk-...
 - `forced_coordination` - Requires tight teamwork
 - `counter_circuit` - Circuit-style kitchen layout
 
+**Planner-Worker Mode** (NEW - hierarchical multi-agent architecture):
+```bash
+# Run planner-worker with visualization
+source .env && uv run python scripts/run_llm_agent.py \
+  --agent-type planner-worker \
+  --layout cramped_room \
+  --horizon 100 \
+  --replan-interval 5 \
+  --visualize \
+  --debug
+
+# Longer episodes with less frequent replanning
+source .env && uv run python scripts/run_llm_agent.py \
+  --agent-type planner-worker \
+  --horizon 400 \
+  --replan-interval 10 \
+  --debug
+```
+
 **Custom OpenAI-compatible endpoints:**
-The agent now automatically reads `LLM_API_BASE` and `LLM_API_KEY` from environment variables, making it easy to use custom endpoints like TritonAI or other OpenAI-compatible APIs.
+The agents now automatically read `LLM_API_BASE` and `LLM_API_KEY` from environment variables, making it easy to use custom endpoints like TritonAI or other OpenAI-compatible APIs.
 
 ### Interactive Tutorial
 
@@ -147,11 +170,18 @@ src/
 │   ├── agents/                # Agent implementations
 │   │   ├── agent.py              # Base Agent class and standard agents (RandomAgent, GreedyHumanModel, etc.)
 │   │   ├── benchmarking.py       # Agent evaluation utilities
-│   │   └── llm/                  # LLM-based agents (NEW)
-│   │       ├── llm_agent.py         # LLMAgent using LangGraph ReAct loop
-│   │       ├── graph.py             # LangGraph StateGraph construction
-│   │       ├── tools.py             # LLM tools (observation & action tools)
-│   │       └── state_serializer.py  # State-to-text serialization
+│   │   └── llm/                  # LLM-based agents
+│   │       ├── llm_agent.py         # Single LLMAgent using LangGraph ReAct loop
+│   │       ├── planner.py           # Planner (coordinates workers)
+│   │       ├── worker_agent.py      # WorkerAgent (executes assigned tasks)
+│   │       ├── task.py              # Task dataclass for planner-worker communication
+│   │       ├── tool_state.py        # Per-agent state management
+│   │       ├── worker_tools.py      # Worker tool factory (observation & action)
+│   │       ├── planner_tools.py     # Planner tool factory (task assignment)
+│   │       ├── graph_builder.py     # Shared ReAct graph builder
+│   │       ├── graph.py             # DEPRECATED: Legacy graph (use graph_builder.py)
+│   │       ├── tools.py             # DEPRECATED: Legacy tools (use worker_tools.py)
+│   │       └── state_serializer.py  # State-to-text serialization & system prompts
 │   ├── planning/              # Near-optimal planning algorithms
 │   │   ├── planners.py           # MotionPlanner, MediumLevelActionManager
 │   │   └── search.py             # A* search, shortest path
@@ -199,6 +229,28 @@ testing/                       # Unit tests
 - Implements a ReAct loop where the LLM can call observation tools and action tools
 - Serializes game state to text for LLM processing
 - Usage: `LLMAgent(model_name="gpt-4o", debug=False, horizon=200)`
+
+**Planner-Worker Architecture** (`agents/llm/planner.py`, `agents/llm/worker_agent.py`):
+- **Hierarchical multi-agent system** where one Planner LLM coordinates two Worker LLMs
+- **Planner** (shared service):
+  - Assigns tasks to workers every N steps (configurable `replan_interval`)
+  - Has access to full game state and all worker statuses
+  - Uses `assign_tasks` tool to communicate task descriptions to workers
+  - Does NOT directly execute actions - only coordinates workers
+- **WorkerAgent** (extends Agent):
+  - Receives task assignments from Planner
+  - Executes tasks by choosing actions each timestep
+  - Cannot communicate with other workers (isolated)
+  - Uses observation tools (get_surroundings, check_path) and action tools (move, interact)
+- **Key Constraints**:
+  - Workers can hold ONLY ONE ITEM at a time
+  - Workers must be adjacent to interact with objects (Manhattan distance = 1)
+  - Recursion limit (15 steps for workers, 20 for planner) prevents infinite loops
+- **Architecture Benefits**:
+  - Better coordination through centralized planning
+  - Workers focus on execution rather than high-level strategy
+  - Scales to multiple workers (tested with 2, extensible to N workers)
+- Usage example in `scripts/run_llm_agent.py` with `--agent-type planner-worker`
 
 **MotionPlanner** (`planning/planners.py`):
 - Computes optimal motion plans using A* search
@@ -377,7 +429,19 @@ Requires Python 3.10 (specified as `>=3.10,<3.11` in `pyproject.toml`).
 
 - Always activate the virtual environment before running code
 - Use `uv` for dependency management to leverage the lockfile (`uv.lock`)
-- When adding new features to LLM agents, update tools in `agents/llm/tools.py` and ensure they follow the LangChain tool decorator pattern
+- When adding new features to LLM agents:
+  - **Single agent mode**: Update `agents/llm/llm_agent.py` and legacy `tools.py`
+  - **Planner-worker mode**: Update `worker_tools.py` (worker actions), `planner_tools.py` (task assignment), or `state_serializer.py` (system prompts)
+  - All tools must follow the LangChain `@tool` decorator pattern
 - Planner computations are expensive; always use `from_pickle_or_compute()` with caching
 - Test changes with both the quick test (`testing/overcooked_test.py`) and full suite
+- **Testing planner-worker**: Run `uv run python -m unittest testing.test_planner testing.test_worker_agent_unit testing.test_planner_tools testing.test_worker_tools` (103 tests)
 - The CI pipeline runs tests on Python 3.10.16 using `uv` and GitHub Actions
+
+### Planner-Worker Development Tips
+
+- **Recursion limits**: Workers have 15-step limit, Planner has 20-step limit to prevent infinite observation loops
+- **Adjacency**: Workers calculate Manhattan distance (`|x1-x2| + |y1-y2|`); distance=1 means adjacent, must interact not move
+- **Task assignment**: Planner uses `assign_tasks` tool with JSON format: `{"worker_0": "task description", "worker_1": "..."}`
+- **Worker isolation**: Each worker has its own `ToolState` instance; workers cannot access each other's state
+- **Debugging**: Use `--debug` flag to see LLM reasoning and `--visualize` to watch agent behavior in real-time
