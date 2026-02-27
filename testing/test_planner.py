@@ -266,7 +266,11 @@ class TestReset(unittest.TestCase):
 
     @patch("overcooked_ai_py.agents.llm.planner.build_react_graph")
     def test_reset_clears_state(self, mock_graph):
-        """Test that reset clears all state."""
+        """Test that reset clears episode state but preserves worker registry.
+
+        Worker registry must persist across episodes because workers are
+        registered once during setup and reused across episodes.
+        """
         # Set up some state
         mock_graph.return_value = Mock()
         self.planner._last_plan_step = 10
@@ -275,10 +279,13 @@ class TestReset(unittest.TestCase):
         # Reset
         self.planner.reset()
 
-        # Verify state cleared
+        # Verify episode state cleared
         self.assertEqual(self.planner._last_plan_step, -1)
         self.assertIsNone(self.planner._graph)
-        self.assertEqual(self.planner._worker_registry, {})
+
+        # Verify worker registry PERSISTS (not cleared)
+        self.assertIn("worker_0", self.planner._worker_registry)
+        self.assertIs(self.planner._worker_registry["worker_0"], self.worker_ts_0)
 
 
 class TestMaybeReplan(unittest.TestCase):

@@ -192,8 +192,12 @@ class Planner:
         return ts.current_task
 
     def reset(self):
-        """Reset planner state for a new episode."""
+        """Reset planner state for a new episode.
+
+        Note: Worker registry is NOT cleared - workers persist across episodes
+        and are registered once during setup via set_mdp().
+        """
         self._tool_state.reset()
         self._graph = None
         self._last_plan_step = -1
-        self._worker_registry.clear()
+        # Do NOT clear worker registry - workers persist across episodes
