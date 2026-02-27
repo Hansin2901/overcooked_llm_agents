@@ -249,6 +249,7 @@ class TestWorkerAgentUnit(unittest.TestCase):
         self.assertIsNone(self.worker.agent_index)
         self.assertIsNone(self.worker.mdp)
         self.assertIsNone(self.worker._graph)
+        self.assertIsNone(self.worker._system_prompt)
         self.assertIsNone(self.worker._tool_state.state)
         self.assertIsNone(self.worker._tool_state.current_task)
 
