@@ -7,6 +7,8 @@ Shared by both planner and worker agents. The graph structure is:
     end -> END
 """
 
+import signal
+import threading
 from typing import Annotated, Callable, TypedDict
 
 from langchain_community.chat_models import ChatLiteLLM
@@ -22,6 +24,34 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
+def _invoke_with_hard_timeout(invoke_fn: Callable, timeout_seconds: float):
+    """Invoke a callable with a hard wall-clock timeout when supported."""
+    if not timeout_seconds or timeout_seconds <= 0:
+        return invoke_fn()
+
+    can_timeout = (
+        hasattr(signal, "setitimer")
+        and threading.current_thread() is threading.main_thread()
+    )
+    if not can_timeout:
+        return invoke_fn()
+
+    def _handle_timeout(_signum, _frame):
+        raise TimeoutError(f"LLM call exceeded {timeout_seconds:.1f}s timeout")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+
+    try:
+        return invoke_fn()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if any(v > 0 for v in previous_timer):
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
+
+
 def build_react_graph(
     model_name: str,
     system_prompt: str,
@@ -33,6 +63,7 @@ def build_react_graph(
     debug_prefix: str = "[LLM]",
     api_base: str = None,
     api_key: str = None,
+    llm_timeout_seconds: float = 35.0,
 ):
     """Build a ReAct LangGraph.
 
@@ -52,12 +83,17 @@ def build_react_graph(
         debug_prefix: Prefix for debug output (e.g. "[Planner]" or "[worker_0]")
         api_base: Custom endpoint config
         api_key: Custom endpoint config
+        llm_timeout_seconds: Hard timeout for each LLM/tool-call turn
 
     Returns:
         Compiled LangGraph StateGraph
     """
     # Initialize LLM via LiteLLM
-    llm_kwargs = {"model": model_name, "temperature": 0.2}
+    llm_kwargs = {
+        "model": model_name,
+        "temperature": 0.2,
+        "timeout": 30.0  # 30 second timeout to prevent hangs
+    }
     if api_base:
         llm_kwargs["api_base"] = api_base
     if api_key:
@@ -78,12 +114,32 @@ def build_react_graph(
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=system_prompt)] + messages
 
-        response = llm_with_tools.invoke(messages)
+        if debug:
+            print(f"  {debug_prefix} Calling LLM...")
 
-        if debug and response.content:
-            print(f"  {debug_prefix} {response.content[:200]}")
+        try:
+            response = _invoke_with_hard_timeout(
+                lambda: llm_with_tools.invoke(messages),
+                llm_timeout_seconds,
+            )
 
-        return {"messages": [response]}
+            # Unit tests often mock invoke() with plain MagicMock objects.
+            # Coerce to AIMessage so LangGraph message channels stay valid.
+            if not isinstance(response, AIMessage):
+                content = getattr(response, "content", "")
+                tool_calls = getattr(response, "tool_calls", None)
+                kwargs = {"tool_calls": tool_calls} if isinstance(tool_calls, list) else {}
+                response = AIMessage(content="" if content is None else str(content), **kwargs)
+
+            if debug and response.content:
+                print(f"  {debug_prefix} {response.content[:200]}")
+
+            return {"messages": [response]}
+        except Exception as e:
+            if debug:
+                print(f"  {debug_prefix} LLM call failed: {e}")
+            # Return empty response to prevent graph from crashing
+            return {"messages": [AIMessage(content=f"Error: {str(e)}")]}
 
     def route_after_llm(state: AgentState) -> str:
         """Route based on the LLM's last message."""

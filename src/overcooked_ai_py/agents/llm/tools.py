@@ -73,7 +73,10 @@ def get_surroundings() -> str:
                     elif obj.is_cooking:
                         obj_desc = f" [cooking, {obj.cook_time - obj._cooking_tick} ticks left]"
                     else:
-                        obj_desc = f" [{len(obj.ingredients)}/3 ingredients]"
+                        if len(obj.ingredients) >= 3 and not _mdp.old_dynamics:
+                            obj_desc = " [FULL 3/3, NOT COOKING - INTERACT with empty hands to start]"
+                        else:
+                            obj_desc = f" [{len(obj.ingredients)}/3 ingredients]"
                 else:
                     obj_desc = f" [{obj.name}]"
 
@@ -105,7 +108,13 @@ def get_pot_details() -> str:
                 remaining = soup.cook_time - soup._cooking_tick
                 lines.append(f"Pot at {pot_pos}: COOKING, {remaining} ticks remaining. Ingredients: {', '.join(ingredients)}.")
             else:
-                lines.append(f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients ({', '.join(ingredients)}). Needs {3 - len(ingredients)} more.")
+                if len(ingredients) >= 3 and not _mdp.old_dynamics:
+                    lines.append(
+                        f"Pot at {pot_pos}: FULL (3/3) but NOT COOKING ({', '.join(ingredients)}). "
+                        f"A chef with empty hands must INTERACT to start cooking."
+                    )
+                else:
+                    lines.append(f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients ({', '.join(ingredients)}). Needs {3 - len(ingredients)} more.")
     if not lines:
         return "No pots found."
     return "\n".join(lines)

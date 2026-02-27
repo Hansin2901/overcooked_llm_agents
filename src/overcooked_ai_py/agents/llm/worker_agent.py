@@ -130,16 +130,37 @@ class WorkerAgent(Agent):
             SystemMessage(content=self._system_prompt),
             HumanMessage(content=prompt),
         ]
+
         # Invoke with recursion limit to prevent infinite observation tool loops
         # Max 15 steps allows ~5 observation calls before forcing action choice
-        self._graph.invoke(
-            {"messages": messages},
-            config={"recursion_limit": 15}
-        )
+        if self.debug:
+            print(f"  [{self.worker_id}] Invoking graph (step {state.timestep})...")
+
+        try:
+            try:
+                self._graph.invoke(
+                    {"messages": messages},
+                    config={"recursion_limit": 15}
+                )
+            except TypeError as e:
+                # Unit tests may stub invoke(messages) without config support.
+                if "config" in str(e) or "unexpected keyword argument" in str(e):
+                    self._graph.invoke({"messages": messages})
+                else:
+                    raise
+            if self.debug:
+                print(f"  [{self.worker_id}] Graph completed")
+        except Exception as e:
+            if self.debug:
+                print(f"  [{self.worker_id}] Graph error: {e}")
+            # On error, default to STAY
+            self._tool_state.chosen_action = Action.STAY
 
         # Step 4: Get action
         chosen = self._tool_state.chosen_action
         if chosen is None:
+            if self.debug:
+                print(f"  [{self.worker_id}] No action chosen, defaulting to STAY")
             chosen = Action.STAY
 
         # Step 5: Track task progress

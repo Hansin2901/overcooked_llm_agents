@@ -50,6 +50,12 @@ class TestPlannerSystemPrompt(unittest.TestCase):
         self.assertIn("independently", prompt.lower(),
                      "Planner should understand workers work independently")
 
+    def test_planner_prompt_clarifies_cooking_start(self):
+        """Planner prompt should clarify that full pots need cooking start action."""
+        prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
+        self.assertIn("NOT ready soup", prompt)
+        self.assertIn("INTERACT", prompt)
+
     def test_planner_prompt_includes_layout_info(self):
         """Planner prompt should include layout for cramped_room."""
         prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
@@ -201,6 +207,15 @@ class TestWorkerSystemPrompt(unittest.TestCase):
         for keyword in action_keywords:
             self.assertIn(keyword, prompt,
                          f"Worker should have guidance about '{keyword}'")
+
+    def test_worker_prompt_clarifies_cooking_start(self):
+        """Worker prompt should clarify full pot vs ready soup."""
+        prompt = build_worker_system_prompt(
+            self.mdp, self.agent_index, self.worker_id
+        )
+        self.assertIn("FULL but idle", prompt)
+        self.assertIn("INTERACT with empty hands", prompt)
+        self.assertIn("NEVER try to pick up soup unless pot status says READY", prompt)
 
     def test_worker_prompt_mentions_partner_entity(self):
         """Worker should know about the @ entity but not that it's another worker."""

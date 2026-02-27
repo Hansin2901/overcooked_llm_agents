@@ -22,6 +22,11 @@ DIRECTION_NAMES = {
 }
 
 
+def _uses_old_dynamics(mdp) -> bool:
+    """Return whether this layout uses old auto-start cooking dynamics."""
+    return bool(getattr(mdp, "old_dynamics", False))
+
+
 def serialize_state(mdp, state, agent_index, horizon=None):
     """Convert an OvercookedState to a text description for the LLM.
 
@@ -136,7 +141,13 @@ def _serialize_pots(mdp, state):
                 remaining = soup.cook_time - soup._cooking_tick
                 lines.append(f"  Pot at {pot_pos}: cooking {remaining} ticks left ({', '.join(ingredients)})")
             else:
-                lines.append(f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)})")
+                if len(ingredients) >= 3 and not _uses_old_dynamics(mdp):
+                    lines.append(
+                        f"  Pot at {pot_pos}: FULL (3/3) but NOT cooking ({', '.join(ingredients)}). "
+                        f"INTERACT with empty hands to start cooking."
+                    )
+                else:
+                    lines.append(f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)})")
 
     return "\n".join(lines)
 
@@ -209,10 +220,28 @@ def build_system_prompt(mdp, agent_index, horizon=None):
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
 
+    if _uses_old_dynamics(mdp):
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> pot starts cooking automatically -> pick up a dish -> use dish on ready pot "
+            "to get soup -> deliver soup to serving location"
+        )
+        cook_rule = "When pot has 3 ingredients, it starts cooking automatically."
+    else:
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> INTERACT with the full pot (while holding nothing) to start cooking "
+            "-> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location"
+        )
+        cook_rule = (
+            "When pot has 3 ingredients it is FULL but idle; it will NOT cook until someone "
+            "INTERACTs with that pot while holding nothing."
+        )
+
     return f"""You are an AI chef in Overcooked, a cooperative cooking game. You are Player {agent_index}.
 
 RULES:
-- Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- Make soups by: {soup_pipeline}
 - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
 - You share the kitchen with a partner. Coordinate to avoid blocking each other.
@@ -228,7 +257,8 @@ KEY LOCATIONS:
 STRATEGY TIPS:
 - To pick up an onion: stand adjacent to an onion dispenser, face it, then INTERACT.
 - To place in pot: stand adjacent to a pot, face it, then INTERACT.
-- When pot has 3 ingredients, it starts cooking automatically.
+- {cook_rule}
+- NEVER try to collect soup unless the pot status says READY.
 - When pot is ready: pick up a dish (from dish dispenser 'D' or a counter), stand adjacent to pot facing it, INTERACT to get soup.
 - Deliver soup: carry soup to a serving location, face it, INTERACT.
 
@@ -278,6 +308,24 @@ def build_planner_system_prompt(mdp, worker_ids, horizon=None):
     # Format worker list
     workers_str = "\n".join(f"  - {wid}" for wid in worker_ids)
 
+    if _uses_old_dynamics(mdp):
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> pot starts cooking automatically -> pick up a dish -> use dish on ready pot "
+            "to get soup -> deliver soup to serving location"
+        )
+        cook_rule = "When a pot reaches 3 ingredients, it starts cooking automatically."
+    else:
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> INTERACT with the full pot (while holding nothing) to start cooking "
+            "-> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location"
+        )
+        cook_rule = (
+            "A pot with 3/3 ingredients is NOT ready soup and does NOT cook by itself; "
+            "assign a worker to start cooking via INTERACT."
+        )
+
     return f"""You are the PLANNER in a cooperative cooking game called Overcooked. You coordinate multiple workers to efficiently make and deliver soups.
 
 YOUR ROLE:
@@ -287,7 +335,7 @@ YOUR ROLE:
 - Think strategically about task allocation and coordination
 
 GAME RULES:
-- Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- Make soups by: {soup_pipeline}
 - CRITICAL: Each worker can hold ONLY ONE ITEM at a time. They must put down what they're holding before picking up something else.
 - INTERACT action: picks up items, places items, starts interactions. Must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, orientation updates).
@@ -309,6 +357,8 @@ COORDINATION STRATEGY:
 - Balance workload: ensure no worker is idle while others are overloaded
 - Adapt dynamically: reassign tasks when workers complete objectives or when game state changes
 - Consider pot timing: coordinate ingredient gathering with pot availability
+- {cook_rule}
+- Do not send workers to collect soup from a pot unless it is READY.
 
 TASK ASSIGNMENT GUIDELINES:
 - Be specific: "Gather 3 onions and put them in the pot at (2, 1)" not just "gather onions"
@@ -359,6 +409,24 @@ def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
 
+    if _uses_old_dynamics(mdp):
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> pot starts cooking automatically -> pick up a dish -> use dish on ready pot "
+            "to get soup -> deliver soup to serving location"
+        )
+        cook_rule = "When pot has 3 ingredients, it starts cooking automatically."
+    else:
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> INTERACT with the full pot (while holding nothing) to start cooking "
+            "-> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location"
+        )
+        cook_rule = (
+            "When pot has 3 ingredients it is FULL but idle. You must INTERACT with empty hands "
+            "to start cooking."
+        )
+
     return f"""You are {worker_id}, a chef in Overcooked. You are Player {agent_index}.
 
 YOUR ROLE:
@@ -367,7 +435,7 @@ YOUR ROLE:
 - Navigate the kitchen and interact with objects to accomplish your goal
 
 GAME RULES:
-- Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- Make soups by: {soup_pipeline}
 - CRITICAL: You can hold ONLY ONE ITEM at a time. You must put down what you're holding (on a counter or in a pot) before picking up something else.
 - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
@@ -385,13 +453,15 @@ ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
   - Example: You at (1,1), target at (0,1) → ADJACENT (X differs by 1)
   - Example: You at (3,1), target at (4,1) → ADJACENT (X differs by 1)
   - Example: You at (2,1), target at (2,0) → ADJACENT (Y differs by 1)
-- To pick up an onion: **IF adjacent to dispenser AND facing it → INTERACT immediately**
-- To pick up a tomato: **IF adjacent to dispenser AND facing it → INTERACT immediately**
-- To place ingredient in pot: **IF adjacent to pot AND facing it → INTERACT immediately**
-- When pot has 3 ingredients, it starts cooking automatically (no action needed).
-- To get soup from ready pot: pick up a dish first, **IF adjacent to pot AND facing it → INTERACT**
-- To pick up a dish: **IF adjacent to dish dispenser AND facing it → INTERACT**
-- To deliver soup: **IF adjacent to serving location AND facing it → INTERACT**
+- To pick up an onion: **stand adjacent to dispenser** and face it, then INTERACT immediately
+- To pick up a tomato: **stand adjacent to dispenser** and face it, then INTERACT immediately
+- To place ingredient in pot: **stand adjacent to pot** and face it, then INTERACT immediately
+- {cook_rule}
+- If pot shows 3/3 ingredients but not READY and not COOKING: go to pot with empty hands and INTERACT to start cooking.
+- NEVER try to pick up soup unless pot status says READY.
+- To get soup from ready pot: pick up a dish first, then **stand adjacent to pot** and face it before INTERACT
+- To pick up a dish: **stand adjacent to dish dispenser** and face it, then INTERACT
+- To deliver soup: **stand adjacent to serving location** and face it, then INTERACT
 
 CRITICAL - CHECK ADJACENCY BEFORE EVERY MOVE:
 Step 1: Calculate distance: |your_x - target_x| + |your_y - target_y|
