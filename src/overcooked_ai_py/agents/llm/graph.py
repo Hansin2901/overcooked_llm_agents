@@ -26,19 +26,27 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def build_graph(model_name: str, system_prompt: str, debug: bool = False):
+def build_graph(model_name: str, system_prompt: str, debug: bool = False, api_base: str = None, api_key: str = None):
     """Build and compile the LangGraph agent.
 
     Args:
         model_name: LiteLLM-compatible model string (e.g. "gpt-4o", "anthropic/claude-sonnet-4-20250514")
         system_prompt: the one-time system prompt with game rules
         debug: if True, print LLM reasoning
+        api_base: optional custom API base URL for OpenAI-compatible endpoints
+        api_key: optional API key for custom endpoints
 
     Returns:
         Compiled LangGraph StateGraph
     """
     # Initialize LLM via LiteLLM
-    llm = ChatLiteLLM(model=model_name, temperature=0.2)
+    llm_kwargs = {"model": model_name, "temperature": 0.2}
+    if api_base:
+        llm_kwargs["api_base"] = api_base
+    if api_key:
+        llm_kwargs["api_key"] = api_key
+
+    llm = ChatLiteLLM(**llm_kwargs)
     llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
     # Tool execution node

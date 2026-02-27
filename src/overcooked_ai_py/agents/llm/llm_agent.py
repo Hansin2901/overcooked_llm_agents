@@ -33,10 +33,12 @@ class LLMAgent(Agent):
         horizon: episode length (for display in state serialization)
     """
 
-    def __init__(self, model_name="gpt-4o", debug=False, horizon=None, history_size=10):
+    def __init__(self, model_name="gpt-4o", debug=False, horizon=None, api_base=None, api_key=None, history_size=10):
         self.model_name = model_name
         self.debug = debug
         self.horizon = horizon
+        self.api_base = api_base
+        self.api_key = api_key
         self.history_size = history_size
         self._history = []
         self._graph = None
@@ -124,6 +126,8 @@ class LLMAgent(Agent):
             model_name=self.model_name,
             system_prompt=self._system_prompt,
             debug=self.debug,
+            api_base=self.api_base,
+            api_key=self.api_key,
         )
 
     def action(self, state):
