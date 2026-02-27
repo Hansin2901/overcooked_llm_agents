@@ -380,20 +380,31 @@ Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, '
 KEY LOCATIONS:
 {locations_str}
 
-ACTION GUIDE:
-- To pick up an onion: stand adjacent to an onion dispenser, face it, then INTERACT.
-- To pick up a tomato: stand adjacent to a tomato dispenser, face it, then INTERACT.
-- To place ingredient in pot: stand adjacent to a pot, face it, then INTERACT.
+ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
+- **ADJACENT means your position differs by exactly 1 in X OR Y coordinate (not both)**
+  - Example: You at (1,1), target at (0,1) → ADJACENT (X differs by 1)
+  - Example: You at (3,1), target at (4,1) → ADJACENT (X differs by 1)
+  - Example: You at (2,1), target at (2,0) → ADJACENT (Y differs by 1)
+- To pick up an onion: **IF adjacent to dispenser AND facing it → INTERACT immediately**
+- To pick up a tomato: **IF adjacent to dispenser AND facing it → INTERACT immediately**
+- To place ingredient in pot: **IF adjacent to pot AND facing it → INTERACT immediately**
 - When pot has 3 ingredients, it starts cooking automatically (no action needed).
-- To get soup from ready pot: pick up a dish first, then stand adjacent to pot facing it, INTERACT.
-- To pick up a dish: stand adjacent to dish dispenser, face it, INTERACT.
-- To deliver soup: carry soup to a serving location, face it, INTERACT.
+- To get soup from ready pot: pick up a dish first, **IF adjacent to pot AND facing it → INTERACT**
+- To pick up a dish: **IF adjacent to dish dispenser AND facing it → INTERACT**
+- To deliver soup: **IF adjacent to serving location AND facing it → INTERACT**
 
-IMPORTANT - ADJACENCY MEANS ONE SQUARE AWAY:
-- If you're at (2, 1) and target is at (2, 0), you're already adjacent (one square up)
-- If you're at (3, 1) and target is at (4, 1), you're already adjacent (one square right)
-- When adjacent and facing the target, INTERACT immediately - don't move closer!
-- Moving onto the target square doesn't work - you must interact from adjacent square
+CRITICAL - CHECK ADJACENCY BEFORE EVERY MOVE:
+Step 1: Calculate distance: |your_x - target_x| + |your_y - target_y|
+Step 2: If distance == 1 → YOU ARE ADJACENT! Check facing direction, then INTERACT
+Step 3: If distance > 1 → Move closer (use check_path to find route)
+
+CONCRETE EXAMPLES (MEMORIZE THESE):
+- You at (1,1), target at (0,1): |1-0| + |1-1| = 1 → ADJACENT! Face left, INTERACT
+- You at (3,1), target at (4,1): |3-4| + |1-1| = 1 → ADJACENT! Face right, INTERACT
+- You at (2,1), target at (2,0): |2-2| + |1-0| = 1 → ADJACENT! Face up, INTERACT
+- You at (1,1), target at (3,3): |1-3| + |1-3| = 4 → NOT adjacent, need to move
+
+DO NOT move onto the target square - you must INTERACT from the adjacent square!
 
 NAVIGATION TIPS:
 - **Use check_path() tool** to find the shortest route to your destination before moving
