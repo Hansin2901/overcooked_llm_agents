@@ -130,7 +130,12 @@ class WorkerAgent(Agent):
             SystemMessage(content=self._system_prompt),
             HumanMessage(content=prompt),
         ]
-        self._graph.invoke({"messages": messages})
+        # Invoke with recursion limit to prevent infinite observation tool loops
+        # Max 15 steps allows ~5 observation calls before forcing action choice
+        self._graph.invoke(
+            {"messages": messages},
+            config={"recursion_limit": 15}
+        )
 
         # Step 4: Get action
         chosen = self._tool_state.chosen_action

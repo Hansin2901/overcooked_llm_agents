@@ -169,7 +169,12 @@ class Planner:
             HumanMessage(content=prompt),
         ]
 
-        self._graph.invoke({"messages": messages})
+        # Invoke with recursion limit to prevent infinite loops
+        # Planner may need more steps for complex reasoning
+        self._graph.invoke(
+            {"messages": messages},
+            config={"recursion_limit": 20}
+        )
         self._last_plan_step = state.timestep
 
         if self.debug:
