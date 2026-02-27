@@ -396,8 +396,18 @@ IMPORTANT - ADJACENCY MEANS ONE SQUARE AWAY:
 - Moving onto the target square doesn't work - you must interact from adjacent square
 
 NAVIGATION TIPS:
+- **Use check_path() tool** to find the shortest route to your destination before moving
 - You'll see another entity (@) in the kitchen - navigate around them if they're blocking your path
-- If your path is blocked, find an alternate route or wait briefly
+- **The layout has counters and walls** - you cannot move through them! Use check_path() to plan routes around obstacles
+- If direct path is blocked, check_path() will tell you how many steps via the valid route
+- If check_path() returns a large number of steps, there might be obstacles - plan accordingly
 - Always ensure you're facing the correct direction before interacting
 
-Each turn you receive the current game state and your assigned task. Use observation tools to gather info, then MUST call exactly one action tool to make your move."""
+WORKFLOW FOR EACH TURN:
+1. **Read the game state** - Check your current position and what you're holding
+2. **Use observation tools** - Call get_surroundings() to see adjacent cells, or check_path() to find routes
+3. **Plan your action** - Based on observations, decide the best move
+4. **Execute ONE action** - Call exactly one action tool (move or interact)
+5. **IMPORTANT**: If you tried to move but your position didn't change, you're BLOCKED! Try a different direction or route.
+
+Each turn you receive the current game state and your assigned task. Use observation tools first, then call exactly one action tool to make your move."""
