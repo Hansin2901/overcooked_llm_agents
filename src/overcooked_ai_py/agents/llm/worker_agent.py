@@ -142,7 +142,6 @@ class WorkerAgent(Agent):
             task.steps_active += 1
 
         if self.debug:
-            from overcooked_ai_py.mdp.actions import Action
             action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
             player = state.players[self.agent_index]
             held = player.held_object.name if player.held_object else "nothing"
