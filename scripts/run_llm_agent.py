@@ -18,10 +18,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from overcooked_ai_py.agents.agent import AgentPair
-from overcooked_ai_py.agents.llm import LLMAgent
+from overcooked_ai_py.agents.llm import LLMAgent, WorkerAgent, Planner
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
-from overcooked_ai_py.planning.planners import MediumLevelActionManager, NO_COUNTERS_PARAMS
+from overcooked_ai_py.planning.planners import MediumLevelActionManager, MotionPlanner, NO_COUNTERS_PARAMS
 
 
 def make_greedy_partner(mdp):
@@ -44,6 +44,8 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Print LLM reasoning each step")
     parser.add_argument("--visualize", action="store_true", help="Show real-time pygame visualization")
     parser.add_argument("--fps", type=int, default=2, help="Frames per second for visualization (default: 2)")
+    parser.add_argument("--agent-type", choices=["llm", "planner-worker"], default="llm", help="Agent architecture: llm (LLMAgent+partner) or planner-worker (Planner+2Workers)")
+    parser.add_argument("--replan-interval", type=int, default=5, help="Steps between replanning for planner-worker mode (default: 5)")
     args = parser.parse_args()
 
     # Read model, API base, and API key from environment if not provided as arguments
@@ -51,9 +53,12 @@ def main():
     api_base = os.getenv("LLM_API_BASE")
     api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
 
+    print(f"Agent type: {args.agent_type}")
     print(f"Layout: {args.layout}")
     print(f"Model: {model}")
     print(f"Horizon: {args.horizon}")
+    if args.agent_type == "planner-worker":
+        print(f"Replan interval: {args.replan_interval}")
     if api_base:
         print(f"API Base: {api_base}")
     print()
@@ -62,16 +67,58 @@ def main():
     mdp = OvercookedGridworld.from_layout_name(args.layout)
     env = OvercookedEnv.from_mdp(mdp, horizon=args.horizon)
 
-    # Create agents
-    llm_agent = LLMAgent(model_name=model, debug=args.debug, horizon=args.horizon, api_base=api_base, api_key=api_key)
-    partner = make_greedy_partner(mdp)
+    # Create agents based on agent type
+    if args.agent_type == "planner-worker":
+        # Planner-worker architecture: one planner coordinates two worker agents
+        planner = Planner(
+            model_name=model,
+            replan_interval=args.replan_interval,
+            debug=args.debug,
+            horizon=args.horizon,
+            api_base=api_base,
+            api_key=api_key,
+        )
+        worker_0 = WorkerAgent(
+            planner,
+            "worker_0",
+            model_name=model,
+            debug=args.debug,
+            horizon=args.horizon,
+            api_base=api_base,
+            api_key=api_key,
+        )
+        worker_1 = WorkerAgent(
+            planner,
+            "worker_1",
+            model_name=model,
+            debug=args.debug,
+            horizon=args.horizon,
+            api_base=api_base,
+            api_key=api_key,
+        )
+        agent_pair = AgentPair(worker_0, worker_1)
 
-    agent_pair = AgentPair(llm_agent, partner)
+        # Initialize planner after both workers registered
+        env.reset()
+        agent_pair.reset()
+        agent_pair.set_mdp(mdp)
+        planner.init(mdp, MotionPlanner(mdp))
+    else:
+        # Original architecture: LLMAgent paired with GreedyHumanModel
+        llm_agent = LLMAgent(
+            model_name=model,
+            debug=args.debug,
+            horizon=args.horizon,
+            api_base=api_base,
+            api_key=api_key,
+        )
+        partner = make_greedy_partner(mdp)
+        agent_pair = AgentPair(llm_agent, partner)
 
-    # Reset environment and agents
-    env.reset()
-    agent_pair.reset()
-    agent_pair.set_mdp(mdp)
+        # Reset environment and agents
+        env.reset()
+        agent_pair.reset()
+        agent_pair.set_mdp(mdp)
 
     # Initialize visualization if requested
     display = None
