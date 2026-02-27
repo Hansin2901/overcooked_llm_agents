@@ -156,3 +156,4 @@ class WorkerAgent(Agent):
         super().reset()
         self._tool_state.reset()
         self._graph = None
+        self._system_prompt = None
