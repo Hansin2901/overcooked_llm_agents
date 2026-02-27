@@ -389,6 +389,12 @@ ACTION GUIDE:
 - To pick up a dish: stand adjacent to dish dispenser, face it, INTERACT.
 - To deliver soup: carry soup to a serving location, face it, INTERACT.
 
+IMPORTANT - ADJACENCY MEANS ONE SQUARE AWAY:
+- If you're at (2, 1) and target is at (2, 0), you're already adjacent (one square up)
+- If you're at (3, 1) and target is at (4, 1), you're already adjacent (one square right)
+- When adjacent and facing the target, INTERACT immediately - don't move closer!
+- Moving onto the target square doesn't work - you must interact from adjacent square
+
 NAVIGATION TIPS:
 - You'll see another entity (@) in the kitchen - navigate around them if they're blocking your path
 - If your path is blocked, find an alternate route or wait briefly
