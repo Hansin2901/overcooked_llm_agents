@@ -57,12 +57,17 @@ LLM_API_KEY=your-key-here
 
 ### Testing
 
+**IMPORTANT**: Always use `uv run` to execute Python commands. Never use bare `python` or `python -m`.
+
 ```bash
 # Quick verification test (run from project root)
-python testing/overcooked_test.py
+uv run python testing/overcooked_test.py
 
 # Full test suite (5-10 minutes)
-python -m unittest discover -s testing/ -p "*_test.py"
+uv run python -m unittest discover -s testing/ -p "*_test.py"
+
+# Run tests with pytest
+uv run python -m pytest testing/ -v
 
 # Run specific test file
 python testing/agent_test.py
