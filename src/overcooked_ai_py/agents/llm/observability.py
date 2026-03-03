@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import uuid
 from typing import Any
 
 try:
@@ -93,3 +94,23 @@ class LangFuseReporter:
             "langfuse_tags": self.context.tags,
         }
         return cfg
+
+
+def build_run_context(args, mode: str, layout: str, model: str) -> RunContext:
+    run_id = uuid.uuid4().hex[:12]
+    default_name = f"{mode}-{layout}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    run_name = args.run_name or default_name
+    user_tags = [tag.strip() for tag in (args.tags or "").split(",")]
+    tags = normalize_tags(user_tags, mode=mode, layout=layout)
+    return RunContext(
+        run_id=run_id,
+        run_name=run_name,
+        mode=mode,
+        layout=layout,
+        model=model,
+        run_title=args.run_title,
+        experiment=args.experiment,
+        variant=args.variant,
+        tags=tags,
+        notes=args.notes,
+    )

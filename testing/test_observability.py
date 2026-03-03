@@ -2,11 +2,13 @@ import json
 import tempfile
 import unittest
 from unittest.mock import patch
+from argparse import Namespace
 
 from overcooked_ai_py.agents.llm.observability import (
     FileRunLogger,
     LangFuseReporter,
     RunContext,
+    build_run_context,
     normalize_tags,
 )
 
@@ -80,3 +82,18 @@ class TestLangFuseReporter(unittest.TestCase):
         reporter = LangFuseReporter(enabled=False, context=self.ctx)
         cfg = reporter.build_invoke_config({})
         self.assertEqual(cfg, {})
+
+
+class TestRunContextFactory(unittest.TestCase):
+    def test_build_run_context_uses_defaults(self):
+        args = Namespace(
+            run_name=None,
+            run_title="",
+            tags="",
+            experiment="default-exp",
+            variant="baseline",
+            notes="",
+        )
+        ctx = build_run_context(args, mode="llm", layout="cramped_room", model="gpt-4o")
+        self.assertEqual(ctx.mode, "llm")
+        self.assertIn("mode:llm", ctx.tags)
