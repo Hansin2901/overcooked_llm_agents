@@ -6,6 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+try:
+    from langfuse.langchain import CallbackHandler
+except Exception:  # pragma: no cover - optional dependency
+    CallbackHandler = None
+
 
 @dataclass
 class RunContext:
@@ -64,3 +69,27 @@ def normalize_tags(user_tags: list[str], mode: str, layout: str) -> list[str]:
         if tag not in tags:
             tags.append(tag)
     return tags
+
+
+class LangFuseReporter:
+    def __init__(self, enabled: bool, context: RunContext):
+        self.enabled = enabled
+        self.context = context
+        self._callback = None
+        if self.enabled and CallbackHandler is not None:
+            self._callback = CallbackHandler(
+                session_id=self.context.run_id,
+                trace_name=self.context.run_name,
+            )
+
+    def build_invoke_config(self, base_config: dict | None) -> dict:
+        if not self.enabled or self._callback is None:
+            return dict(base_config or {})
+        cfg = dict(base_config or {})
+        cfg["callbacks"] = [self._callback]
+        cfg["metadata"] = {
+            **cfg.get("metadata", {}),
+            "langfuse_session_id": self.context.run_id,
+            "langfuse_tags": self.context.tags,
+        }
+        return cfg

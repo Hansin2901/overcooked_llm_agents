@@ -1,9 +1,11 @@
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from overcooked_ai_py.agents.llm.observability import (
     FileRunLogger,
+    LangFuseReporter,
     RunContext,
     normalize_tags,
 )
@@ -55,3 +57,26 @@ class TestObservabilityTags(unittest.TestCase):
         tags = normalize_tags([], mode="planner-worker", layout="coordination_ring")
         self.assertIn("mode:planner-worker", tags)
         self.assertIn("layout:coordination_ring", tags)
+
+
+class TestLangFuseReporter(unittest.TestCase):
+    def setUp(self):
+        self.ctx = RunContext(
+            run_id="r3",
+            run_name="bench-c",
+            mode="llm",
+            layout="cramped_room",
+            model="gpt-4o",
+        )
+
+    @patch("overcooked_ai_py.agents.llm.observability.CallbackHandler")
+    def test_build_invoke_config_includes_callback(self, mock_handler):
+        reporter = LangFuseReporter(enabled=True, context=self.ctx)
+        cfg = reporter.build_invoke_config({"recursion_limit": 15})
+        self.assertIn("callbacks", cfg)
+        self.assertEqual(cfg["recursion_limit"], 15)
+
+    def test_langfuse_reporter_disabled_is_noop(self):
+        reporter = LangFuseReporter(enabled=False, context=self.ctx)
+        cfg = reporter.build_invoke_config({})
+        self.assertEqual(cfg, {})
