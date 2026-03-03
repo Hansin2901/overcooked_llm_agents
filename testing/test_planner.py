@@ -340,5 +340,32 @@ class TestMaybeReplan(unittest.TestCase):
         self.assertEqual(self.planner._last_plan_step, self.state.timestep)
 
 
+class TestPlannerObservability(unittest.TestCase):
+    def setUp(self):
+        self.mdp = OvercookedGridworld.from_layout_name("cramped_room")
+
+    def test_planner_emits_assignment_event(self):
+        sink = Mock()
+        state = self.mdp.get_standard_start_state()
+        planner = Planner(
+            model_name="gpt-4o",
+            observability=sink,
+            invoke_config={"callbacks": ["dummy-callback"]},
+        )
+        planner.register_worker("worker_0", ToolState())
+        planner._system_prompt = "test planner prompt"
+        planner._tool_state.mdp = self.mdp
+        planner._graph = Mock()
+        planner._graph.invoke.return_value = {"messages": []}
+
+        planner.maybe_replan(state)
+        sink.emit.assert_any_call(
+            "planner.assignment",
+            unittest.mock.ANY,
+            step=state.timestep,
+            agent_role="planner",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

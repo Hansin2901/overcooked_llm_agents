@@ -37,6 +37,8 @@ class Planner:
         horizon: Optional[int] = None,
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
+        observability=None,
+        invoke_config: Optional[dict] = None,
     ):
         self.model_name = model_name
         self.replan_interval = replan_interval
@@ -44,6 +46,8 @@ class Planner:
         self.horizon = horizon
         self.api_base = api_base
         self.api_key = api_key
+        self.observability = observability
+        self.invoke_config = dict(invoke_config or {})
 
         self._tool_state = ToolState()  # Planner's own ToolState
         self._graph = None
@@ -79,17 +83,33 @@ class Planner:
         )
 
         self._graph = build_react_graph(
-            self.model_name,
-            self._system_prompt,
-            obs_tools,
-            act_tools,
-            act_names,
+            model_name=self.model_name,
+            system_prompt=self._system_prompt,
+            observation_tools=obs_tools,
+            action_tools=act_tools,
+            action_tool_names=act_names,
             get_chosen_fn=lambda: self._tasks_assigned(),
             debug=self.debug,
             debug_prefix="[Planner]",
             api_base=self.api_base,
             api_key=self.api_key,
+            observability=self.observability,
+            role_name="planner",
         )
+
+    def _safe_emit(self, event_type: str, payload: dict, step: int, agent_role: str):
+        if self.observability is None:
+            return
+        try:
+            self.observability.emit(
+                event_type,
+                payload,
+                step=step,
+                agent_role=agent_role,
+            )
+        except Exception as exc:
+            if self.debug:
+                print(f"  [Planner] observability emit failed: {exc}")
 
     def _tasks_assigned(self) -> Optional[bool]:
         """Check if planner has assigned tasks (termination condition).
@@ -175,10 +195,11 @@ class Planner:
             print(f"  [Planner] Invoking graph (step {state.timestep})...")
 
         try:
+            invoke_config = {**self.invoke_config, "recursion_limit": 20}
             try:
                 self._graph.invoke(
                     {"messages": messages},
-                    config={"recursion_limit": 20}
+                    config=invoke_config,
                 )
             except TypeError as e:
                 # Unit tests may stub invoke(messages) without config support.
@@ -193,6 +214,16 @@ class Planner:
                 print(f"  [Planner] Graph error: {e}")
 
         self._last_plan_step = state.timestep
+        assignments = {
+            wid: (ts.current_task.description if ts.current_task else None)
+            for wid, ts in self._worker_registry.items()
+        }
+        self._safe_emit(
+            "planner.assignment",
+            {"assignments": assignments},
+            step=state.timestep,
+            agent_role="planner",
+        )
 
         if self.debug:
             for wid, ts in self._worker_registry.items():

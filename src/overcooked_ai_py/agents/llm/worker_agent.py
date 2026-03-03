@@ -44,6 +44,8 @@ class WorkerAgent(Agent):
         horizon: Optional[int] = None,
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
+        observability=None,
+        invoke_config: Optional[dict] = None,
     ):
         self.planner = planner
         self.worker_id = worker_id
@@ -52,6 +54,8 @@ class WorkerAgent(Agent):
         self.horizon = horizon
         self.api_base = api_base
         self.api_key = api_key
+        self.observability = observability
+        self.invoke_config = dict(invoke_config or {})
 
         self._tool_state = ToolState()
         self._graph = None
@@ -84,17 +88,33 @@ class WorkerAgent(Agent):
         obs_tools, act_tools, act_names = create_worker_tools(self._tool_state)
 
         self._graph = build_react_graph(
-            self.model_name,
-            self._system_prompt,
-            obs_tools,
-            act_tools,
-            act_names,
+            model_name=self.model_name,
+            system_prompt=self._system_prompt,
+            observation_tools=obs_tools,
+            action_tools=act_tools,
+            action_tool_names=act_names,
             get_chosen_fn=lambda: self._tool_state.chosen_action,
             debug=self.debug,
             debug_prefix=f"[{self.worker_id}]",
             api_base=self.api_base,
             api_key=self.api_key,
+            observability=self.observability,
+            role_name=self.worker_id,
         )
+
+    def _safe_emit(self, event_type: str, payload: dict, step: int, agent_role: str):
+        if self.observability is None:
+            return
+        try:
+            self.observability.emit(
+                event_type,
+                payload,
+                step=step,
+                agent_role=agent_role,
+            )
+        except Exception as exc:
+            if self.debug:
+                print(f"  [{self.worker_id}] observability emit failed: {exc}")
 
     def action(self, state):
         """Choose an action based on current task and game state.
@@ -137,10 +157,11 @@ class WorkerAgent(Agent):
             print(f"  [{self.worker_id}] Invoking graph (step {state.timestep})...")
 
         try:
+            invoke_config = {**self.invoke_config, "recursion_limit": 15}
             try:
                 self._graph.invoke(
                     {"messages": messages},
-                    config={"recursion_limit": 15}
+                    config=invoke_config,
                 )
             except TypeError as e:
                 # Unit tests may stub invoke(messages) without config support.
@@ -175,6 +196,16 @@ class WorkerAgent(Agent):
                 f"  [Step {state.timestep}] {self.worker_id} at {player.position} "
                 f"holding {held} → {action_name}"
             )
+        action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
+        self._safe_emit(
+            "action.commit",
+            {
+                "action": action_name,
+                "task": task.description if task else None,
+            },
+            step=state.timestep,
+            agent_role=self.worker_id,
+        )
 
         action_probs = self.a_probs_from_action(chosen)
         return chosen, {"action_probs": action_probs}

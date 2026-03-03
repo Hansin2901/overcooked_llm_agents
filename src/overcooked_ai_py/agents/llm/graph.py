@@ -26,7 +26,15 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def build_graph(model_name: str, system_prompt: str, debug: bool = False, api_base: str = None, api_key: str = None):
+def build_graph(
+    model_name: str,
+    system_prompt: str,
+    debug: bool = False,
+    api_base: str = None,
+    api_key: str = None,
+    observability=None,
+    role_name: str = "llm_agent",
+):
     """Build and compile the LangGraph agent.
 
     Args:
@@ -49,6 +57,19 @@ def build_graph(model_name: str, system_prompt: str, debug: bool = False, api_ba
     llm = ChatLiteLLM(**llm_kwargs)
     llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
+    def _safe_emit(event_type: str, payload: dict):
+        if observability is None:
+            return
+        try:
+            observability.emit(
+                event_type,
+                payload,
+                step=None,
+                agent_role=role_name,
+            )
+        except Exception:
+            pass
+
     # Tool execution node
     tool_node = ToolNode(ALL_TOOLS)
 
@@ -60,12 +81,31 @@ def build_graph(model_name: str, system_prompt: str, debug: bool = False, api_ba
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=system_prompt)] + messages
 
-        response = llm_with_tools.invoke(messages)
+        try:
+            response = llm_with_tools.invoke(messages)
+            _safe_emit(
+                "llm.generation",
+                {
+                    "content_preview": (response.content or "")[:200],
+                    "tool_call_count": len(response.tool_calls or []),
+                },
+            )
+            for tc in response.tool_calls or []:
+                _safe_emit(
+                    "tool.call",
+                    {"tool_name": tc.get("name"), "args": tc.get("args", {})},
+                )
 
-        if debug and response.content:
-            print(f"  [LLM] {response.content[:200]}")
+            if debug and response.content:
+                print(f"  [LLM] {response.content[:200]}")
 
-        return {"messages": [response]}
+            return {"messages": [response]}
+        except Exception as exc:
+            _safe_emit(
+                "error",
+                {"where": "graph.llm_node", "message": str(exc)},
+            )
+            return {"messages": [AIMessage(content=f"Error: {exc}")]}
 
     def route_after_llm(state: AgentState) -> str:
         """Route based on the LLM's last message."""

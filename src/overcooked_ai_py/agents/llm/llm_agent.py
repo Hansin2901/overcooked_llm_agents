@@ -33,17 +33,43 @@ class LLMAgent(Agent):
         horizon: episode length (for display in state serialization)
     """
 
-    def __init__(self, model_name="gpt-4o", debug=False, horizon=None, api_base=None, api_key=None, history_size=10):
+    def __init__(
+        self,
+        model_name="gpt-4o",
+        debug=False,
+        horizon=None,
+        api_base=None,
+        api_key=None,
+        history_size=10,
+        observability=None,
+        invoke_config=None,
+    ):
         self.model_name = model_name
         self.debug = debug
         self.horizon = horizon
         self.api_base = api_base
         self.api_key = api_key
         self.history_size = history_size
+        self.observability = observability
+        self.invoke_config = dict(invoke_config or {})
         self._history = []
         self._graph = None
         self._system_prompt = None
         super().__init__()
+
+    def _safe_emit(self, event_type, payload, step, agent_role):
+        if self.observability is None:
+            return
+        try:
+            self.observability.emit(
+                event_type,
+                payload,
+                step=step,
+                agent_role=agent_role,
+            )
+        except Exception as exc:
+            if self.debug:
+                print(f"  [LLMAgent] observability emit failed: {exc}")
 
     def _format_history(self):
         """Format history entries for display to LLM."""
@@ -128,6 +154,8 @@ class LLMAgent(Agent):
             debug=self.debug,
             api_base=self.api_base,
             api_key=self.api_key,
+            observability=self.observability,
+            role_name="llm_agent",
         )
 
     def action(self, state):
@@ -165,7 +193,14 @@ class LLMAgent(Agent):
 
         # Execute graph with error handling
         try:
-            result = self._graph.invoke({"messages": messages})
+            invoke_config = {**self.invoke_config, "recursion_limit": 15}
+            try:
+                result = self._graph.invoke({"messages": messages}, config=invoke_config)
+            except TypeError as e:
+                if "config" in str(e) or "unexpected keyword argument" in str(e):
+                    result = self._graph.invoke({"messages": messages})
+                else:
+                    raise
             reasoning = self._extract_reasoning(result["messages"])
         except Exception as e:
             # Graph failed - log warning and use fallback
@@ -188,6 +223,13 @@ class LLMAgent(Agent):
         if self.debug:
             action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
             print(f"  [Step {state.timestep}] Player {self.agent_index} -> {action_name}")
+        action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
+        self._safe_emit(
+            "action.commit",
+            {"action": action_name},
+            step=state.timestep,
+            agent_role="llm_agent",
+        )
 
         action_probs = self.a_probs_from_action(chosen)
         return chosen, {"action_probs": action_probs}
