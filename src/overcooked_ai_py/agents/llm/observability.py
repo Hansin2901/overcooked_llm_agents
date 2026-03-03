@@ -79,10 +79,14 @@ class LangFuseReporter:
         self._callback = None
         if self.enabled and CallbackHandler is not None:
             try:
-                self._callback = CallbackHandler(
-                    session_id=self.context.run_id,
-                    trace_name=self.context.run_name,
-                )
+                # Support both legacy and current LangFuse callback signatures.
+                try:
+                    self._callback = CallbackHandler(
+                        session_id=self.context.run_id,
+                        trace_name=self.context.run_name,
+                    )
+                except TypeError:
+                    self._callback = CallbackHandler()
             except Exception:
                 # LangFuse is best-effort only; continue with local logging.
                 self._callback = None

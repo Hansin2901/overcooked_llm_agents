@@ -16,6 +16,7 @@ dependencies = [
     "dill",
     "gymnasium",
     "ipywidgets",
+    "langchain",
     "langfuse",
     "numpy<2",
     "opencv-python",

@@ -91,6 +91,24 @@ class TestLangFuseReporter(unittest.TestCase):
         cfg = reporter.build_invoke_config({"recursion_limit": 15})
         self.assertEqual(cfg, {"recursion_limit": 15})
 
+    @patch("overcooked_ai_py.agents.llm.observability.CallbackHandler")
+    def test_langfuse_handler_signature_fallback(self, mock_handler):
+        callback_obj = object()
+        calls = []
+
+        def _factory(*args, **kwargs):
+            calls.append((args, kwargs))
+            if kwargs:
+                raise TypeError("unexpected keyword")
+            return callback_obj
+
+        mock_handler.side_effect = _factory
+        reporter = LangFuseReporter(enabled=True, context=self.ctx)
+        cfg = reporter.build_invoke_config({"recursion_limit": 15})
+        self.assertIs(reporter._callback, callback_obj)
+        self.assertIn("callbacks", cfg)
+        self.assertGreaterEqual(len(calls), 2)
+
 
 class TestRunContextFactory(unittest.TestCase):
     def test_build_run_context_uses_defaults(self):
