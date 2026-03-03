@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -97,3 +98,23 @@ class TestRunContextFactory(unittest.TestCase):
         ctx = build_run_context(args, mode="llm", layout="cramped_room", model="gpt-4o")
         self.assertEqual(ctx.mode, "llm")
         self.assertIn("mode:llm", ctx.tags)
+
+
+class TestRunScriptCli(unittest.TestCase):
+    def test_cli_help_includes_observability_flags(self):
+        proc = subprocess.run(
+            ["uv", "run", "python", "scripts/run_llm_agent.py", "--help"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        help_text = proc.stdout + proc.stderr
+        for flag in [
+            "--run-name",
+            "--run-title",
+            "--tags",
+            "--experiment",
+            "--variant",
+            "--notes",
+        ]:
+            self.assertIn(flag, help_text)
