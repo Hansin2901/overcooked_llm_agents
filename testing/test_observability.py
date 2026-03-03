@@ -84,6 +84,13 @@ class TestLangFuseReporter(unittest.TestCase):
         cfg = reporter.build_invoke_config({})
         self.assertEqual(cfg, {})
 
+    @patch("overcooked_ai_py.agents.llm.observability.CallbackHandler")
+    def test_langfuse_handler_init_failure_is_noop(self, mock_handler):
+        mock_handler.side_effect = RuntimeError("init failed")
+        reporter = LangFuseReporter(enabled=True, context=self.ctx)
+        cfg = reporter.build_invoke_config({"recursion_limit": 15})
+        self.assertEqual(cfg, {"recursion_limit": 15})
+
 
 class TestRunContextFactory(unittest.TestCase):
     def test_build_run_context_uses_defaults(self):

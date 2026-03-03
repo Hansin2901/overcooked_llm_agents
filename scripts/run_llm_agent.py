@@ -19,7 +19,11 @@ load_dotenv()
 
 from overcooked_ai_py.agents.agent import AgentPair
 from overcooked_ai_py.agents.llm import LLMAgent, WorkerAgent, Planner
-from overcooked_ai_py.agents.llm.observability import FileRunLogger, build_run_context
+from overcooked_ai_py.agents.llm.observability import (
+    FileRunLogger,
+    LangFuseReporter,
+    build_run_context,
+)
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 from overcooked_ai_py.planning.planners import MediumLevelActionManager, MotionPlanner, NO_COUNTERS_PARAMS
@@ -66,6 +70,13 @@ def main():
         model=model,
     )
     sink = FileRunLogger(base_dir="logs/agent_runs", context=run_context)
+    langfuse_enabled = bool(
+        os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")
+    )
+    invoke_config = LangFuseReporter(
+        enabled=langfuse_enabled,
+        context=run_context,
+    ).build_invoke_config({})
 
     def safe_emit(event_type, payload, step=None, agent_role="runner"):
         try:
@@ -99,6 +110,8 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
+            observability=sink,
+            invoke_config=invoke_config,
         )
         worker_0 = WorkerAgent(
             planner,
@@ -108,6 +121,8 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
+            observability=sink,
+            invoke_config=invoke_config,
         )
         worker_1 = WorkerAgent(
             planner,
@@ -117,6 +132,8 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
+            observability=sink,
+            invoke_config=invoke_config,
         )
         agent_pair = AgentPair(worker_0, worker_1)
 
@@ -133,6 +150,8 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
+            observability=sink,
+            invoke_config=invoke_config,
         )
         partner = make_greedy_partner(mdp)
         agent_pair = AgentPair(llm_agent, partner)

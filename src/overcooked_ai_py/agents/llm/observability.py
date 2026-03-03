@@ -78,10 +78,14 @@ class LangFuseReporter:
         self.context = context
         self._callback = None
         if self.enabled and CallbackHandler is not None:
-            self._callback = CallbackHandler(
-                session_id=self.context.run_id,
-                trace_name=self.context.run_name,
-            )
+            try:
+                self._callback = CallbackHandler(
+                    session_id=self.context.run_id,
+                    trace_name=self.context.run_name,
+                )
+            except Exception:
+                # LangFuse is best-effort only; continue with local logging.
+                self._callback = None
 
     def build_invoke_config(self, base_config: dict | None) -> dict:
         if not self.enabled or self._callback is None:
