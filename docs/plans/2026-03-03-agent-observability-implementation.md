@@ -17,6 +17,7 @@ Skill references: `@test-driven-development`, `@verification-before-completion`.
 **Files:**
 - Create: `src/overcooked_ai_py/agents/llm/observability.py`
 - Create: `testing/test_observability.py`
+- Test: `testing/test_observability.py`
 
 **Step 1: Write the failing tests**
 
@@ -80,6 +81,7 @@ git commit -m "feat: add observability core and per-run JSONL logger"
 **Files:**
 - Modify: `src/overcooked_ai_py/agents/llm/observability.py`
 - Modify: `testing/test_observability.py`
+- Test: `testing/test_observability.py`
 
 **Step 1: Write the failing tests**
 
@@ -131,6 +133,7 @@ git commit -m "feat: enforce mode and layout tags for observability"
 - Modify: `testing/test_observability.py`
 - Modify: `pyproject.toml`
 - Modify: `.env.example`
+- Test: `testing/test_observability.py`
 
 **Step 1: Write the failing tests**
 
@@ -187,6 +190,7 @@ git commit -m "feat: add optional LangFuse reporter and callback config plumbing
 **Files:**
 - Modify: `scripts/run_llm_agent.py`
 - Modify: `testing/test_observability.py`
+- Test: `testing/test_observability.py`
 
 **Step 1: Write the failing tests**
 
@@ -236,19 +240,62 @@ git commit -m "feat: add run metadata flags and lifecycle observability events"
 **Files:**
 - Modify: `src/overcooked_ai_py/agents/llm/graph_builder.py`
 - Modify: `testing/test_graph_builder.py`
+- Test: `testing/test_graph_builder.py`
 
 **Step 1: Write the failing tests**
 
 ```python
-def test_observability_receives_llm_generation_event(self):
+@patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
+def test_observability_receives_llm_generation_event(self, mock_llm_class):
+    from langchain_core.messages import AIMessage
+
     sink = MagicMock()
-    graph = build_react_graph(..., observability=sink, role_name="planner")
+    mock_llm_instance = MagicMock()
+    mock_llm_class.return_value = mock_llm_instance
+    mock_llm_with_tools = MagicMock()
+    mock_llm_instance.bind_tools.return_value = mock_llm_with_tools
+    mock_llm_with_tools.invoke.return_value = AIMessage(content="Planner reasoning", tool_calls=[])
+
+    graph = build_react_graph(
+        model_name=self.model_name,
+        system_prompt=self.system_prompt,
+        observation_tools=self.observation_tools,
+        action_tools=self.action_tools,
+        action_tool_names=self.action_tool_names,
+        get_chosen_fn=lambda: self.action_chosen,
+        debug=False,
+        observability=sink,
+        role_name="planner",
+    )
     graph.invoke({"messages": [("user", "x")]})
     sink.emit.assert_any_call("llm.generation", unittest.mock.ANY, step=None, agent_role="planner")
 
-def test_observability_receives_tool_call_event(self):
+@patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
+def test_observability_receives_tool_call_event(self, mock_llm_class):
+    from langchain_core.messages import AIMessage
+
     sink = MagicMock()
-    ...
+    mock_llm_instance = MagicMock()
+    mock_llm_class.return_value = mock_llm_instance
+    mock_llm_with_tools = MagicMock()
+    mock_llm_instance.bind_tools.return_value = mock_llm_with_tools
+    mock_llm_with_tools.invoke.return_value = AIMessage(
+        content="Calling action tool",
+        tool_calls=[{"name": "do_action", "args": {}, "id": "1"}],
+    )
+
+    graph = build_react_graph(
+        model_name=self.model_name,
+        system_prompt=self.system_prompt,
+        observation_tools=self.observation_tools,
+        action_tools=self.action_tools,
+        action_tool_names=self.action_tool_names,
+        get_chosen_fn=lambda: self.action_chosen,
+        debug=False,
+        observability=sink,
+        role_name="planner",
+    )
+    graph.invoke({"messages": [("user", "x")]})
     sink.emit.assert_any_call("tool.call", unittest.mock.ANY, step=None, agent_role="planner")
 ```
 
@@ -260,14 +307,38 @@ Expected: FAIL with unexpected keyword `observability` in `build_react_graph`.
 **Step 3: Write minimal implementation**
 
 ```python
-def build_react_graph(..., observability=None, role_name="llm"):
-    ...
+def build_react_graph(
+    model_name: str,
+    system_prompt: str,
+    observation_tools: list,
+    action_tools: list,
+    action_tool_names: set[str],
+    get_chosen_fn: Callable,
+    debug: bool = False,
+    debug_prefix: str = "[LLM]",
+    api_base: str = None,
+    api_key: str = None,
+    llm_timeout_seconds: float = 35.0,
+    observability=None,
+    role_name: str = "llm",
+):
+    # existing graph setup...
     if observability:
-        observability.emit("llm.generation", {...}, agent_role=role_name)
-    ...
+        observability.emit(
+            "llm.generation",
+            {"content_preview": (response.content or "")[:200]},
+            step=None,
+            agent_role=role_name,
+        )
+
     for tc in last_message.tool_calls:
         if observability:
-            observability.emit("tool.call", {"tool_name": tc["name"], "args": tc.get("args", {})}, agent_role=role_name)
+            observability.emit(
+                "tool.call",
+                {"tool_name": tc["name"], "args": tc.get("args", {})},
+                step=None,
+                agent_role=role_name,
+            )
 ```
 
 **Step 4: Run test to verify it passes**
@@ -292,17 +363,32 @@ git commit -m "feat: emit llm and tool observability events from graph builder"
 - Modify: `testing/test_planner.py`
 - Modify: `testing/test_worker_agent_unit.py`
 - Modify: `testing/llm_agent_test.py`
+- Test: `testing/test_planner.py`
+- Test: `testing/test_worker_agent_unit.py`
+- Test: `testing/llm_agent_test.py`
 
 **Step 1: Write the failing tests**
 
 ```python
 def test_planner_emits_assignment_event(self):
-    planner = Planner(..., observability=self.sink, invoke_config={"callbacks": ["x"]})
-    ...
+    state = self.mdp.get_standard_start_state()
+    planner = Planner(
+        model_name="gpt-4o",
+        observability=self.sink,
+        invoke_config={"callbacks": ["dummy-callback"]},
+    )
+    planner._graph = Mock()
+    planner._graph.invoke.return_value = {"messages": []}
+    planner.maybe_replan(state)
     self.sink.emit.assert_any_call("planner.assignment", unittest.mock.ANY, step=state.timestep, agent_role="planner")
 
 def test_worker_emits_action_commit(self):
-    ...
+    state = self.mdp.get_standard_start_state()
+    worker = WorkerAgent(self.planner, "worker_0", model_name="gpt-4o")
+    worker._graph = Mock()
+    worker._tool_state.set_action(Action.STAY)
+    worker.observability = self.sink
+    worker.action(state)
     self.sink.emit.assert_any_call("action.commit", unittest.mock.ANY, step=state.timestep, agent_role="worker_0")
 ```
 
@@ -315,7 +401,17 @@ Expected: FAIL due to new constructor args/events not implemented.
 
 ```python
 class Planner:
-    def __init__(..., observability=None, invoke_config=None):
+    def __init__(
+        self,
+        model_name: str = "gpt-4o",
+        replan_interval: int = 5,
+        debug: bool = False,
+        horizon: Optional[int] = None,
+        api_base: Optional[str] = None,
+        api_key: Optional[str] = None,
+        observability=None,
+        invoke_config: Optional[dict] = None,
+    ):
         self.observability = observability
         self.invoke_config = invoke_config or {}
 
@@ -344,12 +440,40 @@ git commit -m "feat: wire observability and callback config through llm agents"
 **Files:**
 - Modify: `src/overcooked_ai_py/agents/llm/README_PLANNER_WORKER.md`
 - Modify: `README.md` (if runner flags are documented there)
+- Test: `testing/test_observability.py`
 
-**Step 1: Write failing doc/test expectation**
+**Step 1: Write failing doc/CLI test**
 
-Add a small test/assertion (or checklist entry) that the new CLI flags are shown in `--help` output and mode tags are present in created logs.
+```python
+def test_cli_help_includes_observability_flags(self):
+    import subprocess
 
-**Step 2: Run full validation**
+    proc = subprocess.run(
+        ["uv", "run", "python", "scripts/run_llm_agent.py", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    help_text = proc.stdout + proc.stderr
+    for flag in [
+        "--run-name",
+        "--run-title",
+        "--tags",
+        "--experiment",
+        "--variant",
+        "--notes",
+    ]:
+        self.assertIn(flag, help_text)
+```
+
+**Step 2: Run test to verify it fails/passes at the right phase**
+
+Run: `uv run python -m unittest testing.test_observability.TestRunScriptCli -v`  
+Expected:
+- FAIL before Task 4 implementation is complete
+- PASS after Task 4 implementation is complete
+
+**Step 3: Run full validation**
 
 Run:
 - `uv run python -m unittest testing.test_observability testing.test_graph_builder testing.test_planner testing.test_worker_agent_unit testing.llm_agent_test -v`
@@ -362,7 +486,7 @@ Expected:
 - File events include `mode:llm` and `mode:planner-worker`
 - Runs succeed with and without LangFuse keys present
 
-**Step 3: Commit**
+**Step 4: Commit**
 
 ```bash
 git add src/overcooked_ai_py/agents/llm/README_PLANNER_WORKER.md README.md
@@ -377,4 +501,3 @@ Before declaring completion:
 2. Re-run both smoke scripts.
 3. Confirm JSONL log schema is consistent and parseable.
 4. Confirm no edits were made outside intended LLM-agent and runner surfaces.
-
