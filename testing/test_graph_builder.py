@@ -257,12 +257,64 @@ class TestGraphBuilder(unittest.TestCase):
 
             # Check that system prompt is in the messages
             from langchain_core.messages import SystemMessage
-
             has_system_message = any(
                 isinstance(msg, SystemMessage) and msg.content == custom_prompt
                 for msg in call_args
             )
             self.assertTrue(has_system_message)
+
+    @patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
+    def test_observability_receives_llm_generation_event(self, mock_llm_class):
+        from langchain_core.messages import AIMessage
+
+        sink = MagicMock()
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+        mock_llm_with_tools = MagicMock()
+        mock_llm_instance.bind_tools.return_value = mock_llm_with_tools
+        mock_llm_with_tools.invoke.return_value = AIMessage(content="Planner reasoning", tool_calls=[])
+
+        graph = build_react_graph(
+            model_name=self.model_name,
+            system_prompt=self.system_prompt,
+            observation_tools=self.observation_tools,
+            action_tools=self.action_tools,
+            action_tool_names=self.action_tool_names,
+            get_chosen_fn=lambda: self.action_chosen,
+            debug=False,
+            observability=sink,
+            role_name="planner",
+        )
+        graph.invoke({"messages": [("user", "x")]})
+        sink.emit.assert_any_call("llm.generation", unittest.mock.ANY, step=None, agent_role="planner")
+
+    @patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
+    def test_observability_receives_tool_call_event(self, mock_llm_class):
+        from langchain_core.messages import AIMessage
+
+        sink = MagicMock()
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+        mock_llm_with_tools = MagicMock()
+        mock_llm_instance.bind_tools.return_value = mock_llm_with_tools
+        mock_llm_with_tools.invoke.return_value = AIMessage(
+            content="Calling action tool",
+            tool_calls=[{"name": "do_action", "args": {}, "id": "1"}],
+        )
+
+        graph = build_react_graph(
+            model_name=self.model_name,
+            system_prompt=self.system_prompt,
+            observation_tools=self.observation_tools,
+            action_tools=self.action_tools,
+            action_tool_names=self.action_tool_names,
+            get_chosen_fn=lambda: self.action_chosen,
+            debug=False,
+            observability=sink,
+            role_name="planner",
+        )
+        graph.invoke({"messages": [("user", "x")]})
+        sink.emit.assert_any_call("tool.call", unittest.mock.ANY, step=None, agent_role="planner")
 
 
 if __name__ == "__main__":

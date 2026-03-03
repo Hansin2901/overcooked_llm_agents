@@ -64,6 +64,8 @@ def build_react_graph(
     api_base: str = None,
     api_key: str = None,
     llm_timeout_seconds: float = 35.0,
+    observability=None,
+    role_name: str = "llm",
 ):
     """Build a ReAct LangGraph.
 
@@ -106,6 +108,20 @@ def build_react_graph(
     # Tool execution node
     tool_node = ToolNode(all_tools)
 
+    def _safe_emit(event_type: str, payload: dict):
+        if observability is None:
+            return
+        try:
+            observability.emit(
+                event_type,
+                payload,
+                step=None,
+                agent_role=role_name,
+            )
+        except Exception as exc:
+            if debug:
+                print(f"  {debug_prefix} observability emit failed: {exc}")
+
     def llm_node(state: AgentState) -> dict:
         """Call the LLM with current messages."""
         messages = state["messages"]
@@ -134,10 +150,33 @@ def build_react_graph(
             if debug and response.content:
                 print(f"  {debug_prefix} {response.content[:200]}")
 
+            _safe_emit(
+                "llm.generation",
+                {
+                    "content_preview": (response.content or "")[:200],
+                    "tool_call_count": len(response.tool_calls or []),
+                },
+            )
+            for tc in response.tool_calls or []:
+                _safe_emit(
+                    "tool.call",
+                    {
+                        "tool_name": tc.get("name"),
+                        "args": tc.get("args", {}),
+                    },
+                )
+
             return {"messages": [response]}
         except Exception as e:
             if debug:
                 print(f"  {debug_prefix} LLM call failed: {e}")
+            _safe_emit(
+                "error",
+                {
+                    "where": "graph_builder.llm_node",
+                    "message": str(e),
+                },
+            )
             # Return empty response to prevent graph from crashing
             return {"messages": [AIMessage(content=f"Error: {str(e)}")]}
 
