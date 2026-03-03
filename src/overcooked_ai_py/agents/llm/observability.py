@@ -55,3 +55,12 @@ class FileRunLogger:
         with self.file_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=True))
             handle.write("\n")
+
+
+def normalize_tags(user_tags: list[str], mode: str, layout: str) -> list[str]:
+    tags = [tag.strip() for tag in user_tags if tag and tag.strip()]
+    required = [f"mode:{mode}", f"layout:{layout}"]
+    for tag in required:
+        if tag not in tags:
+            tags.append(tag)
+    return tags

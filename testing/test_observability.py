@@ -2,7 +2,11 @@ import json
 import tempfile
 import unittest
 
-from overcooked_ai_py.agents.llm.observability import FileRunLogger, RunContext
+from overcooked_ai_py.agents.llm.observability import (
+    FileRunLogger,
+    RunContext,
+    normalize_tags,
+)
 
 
 class TestObservabilityCore(unittest.TestCase):
@@ -39,3 +43,15 @@ class TestObservabilityCore(unittest.TestCase):
         self.assertEqual(row["run_id"], "r2")
         self.assertEqual(row["event_type"], "action.commit")
         self.assertEqual(row["mode"], "planner-worker")
+
+
+class TestObservabilityTags(unittest.TestCase):
+    def test_required_mode_tag_added_for_llm(self):
+        tags = normalize_tags(["exp:bench1"], mode="llm", layout="cramped_room")
+        self.assertIn("mode:llm", tags)
+        self.assertIn("layout:cramped_room", tags)
+
+    def test_required_mode_tag_added_for_planner_worker(self):
+        tags = normalize_tags([], mode="planner-worker", layout="coordination_ring")
+        self.assertIn("mode:planner-worker", tags)
+        self.assertIn("layout:coordination_ring", tags)
