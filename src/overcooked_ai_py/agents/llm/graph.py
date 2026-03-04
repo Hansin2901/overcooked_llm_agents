@@ -56,6 +56,15 @@ def build_graph(
 
     llm = ChatLiteLLM(**llm_kwargs)
     llm_with_tools = llm.bind_tools(ALL_TOOLS)
+    role_key = (role_name or "").strip().replace("-", "_").replace(" ", "_")
+    use_role_prefix = role_key not in {"", "llm_agent"}
+    llm_node_name = f"{role_key}_llm" if use_role_prefix else "llm"
+    obs_tools_node_name = (
+        f"{role_key}_obs_tools" if use_role_prefix else "obs_tools"
+    )
+    action_tools_node_name = (
+        f"{role_key}_action_tools" if use_role_prefix else "action_tools"
+    )
 
     def _safe_emit(event_type: str, payload: dict):
         if observability is None:
@@ -134,26 +143,26 @@ def build_graph(
     # Build the graph
     graph = StateGraph(AgentState)
 
-    graph.add_node("llm", llm_node)
-    graph.add_node("obs_tools", tool_node)
-    graph.add_node("action_tools", tool_node)
+    graph.add_node(llm_node_name, llm_node)
+    graph.add_node(obs_tools_node_name, tool_node)
+    graph.add_node(action_tools_node_name, tool_node)
 
-    graph.add_edge(START, "llm")
+    graph.add_edge(START, llm_node_name)
 
     graph.add_conditional_edges(
-        "llm",
+        llm_node_name,
         route_after_llm,
         {
-            "obs_tools": "obs_tools",
-            "action_tools": "action_tools",
+            "obs_tools": obs_tools_node_name,
+            "action_tools": action_tools_node_name,
             "end": END,
         },
     )
 
     # After observation tools, go back to LLM
-    graph.add_edge("obs_tools", "llm")
+    graph.add_edge(obs_tools_node_name, llm_node_name)
 
     # After action tools, end
-    graph.add_edge("action_tools", END)
+    graph.add_edge(action_tools_node_name, END)
 
     return graph.compile()

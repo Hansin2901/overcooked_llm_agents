@@ -263,6 +263,22 @@ class TestGraphBuilder(unittest.TestCase):
             )
             self.assertTrue(has_system_message)
 
+    def test_graph_nodes_include_role_prefix(self):
+        graph = build_react_graph(
+            model_name=self.model_name,
+            system_prompt=self.system_prompt,
+            observation_tools=self.observation_tools,
+            action_tools=self.action_tools,
+            action_tool_names=self.action_tool_names,
+            get_chosen_fn=lambda: self.action_chosen,
+            debug=False,
+            role_name="worker_0",
+        )
+        node_names = set(graph.get_graph().nodes.keys())
+        self.assertIn("worker_0_llm", node_names)
+        self.assertIn("worker_0_obs_tools", node_names)
+        self.assertIn("worker_0_action_tools", node_names)
+
     @patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
     def test_observability_receives_llm_generation_event(self, mock_llm_class):
         from langchain_core.messages import AIMessage
