@@ -1,9 +1,9 @@
 """Generic ReAct graph builder for LangGraph agents.
 
 Shared by both planner and worker agents. The graph structure is:
-  START -> llm_node -> route_after_llm -> {obs_tools, action_tools, end}
-    obs_tools -> llm_node (loop)
-    action_tools -> END
+  START -> think -> decide_next -> {observe, act, end}
+    observe -> think (loop)
+    act -> END
     end -> END
 """
 
@@ -75,7 +75,7 @@ def build_react_graph(
     """Build a ReAct LangGraph.
 
     Same structure as current graph.py:
-    START → llm → route → {obs_tools → llm (loop), action_tools → END, end → END}
+    START → think → decide_next → {observe → think (loop), act → END, end → END}
 
     Args:
         model_name: LiteLLM model string (e.g., "gpt-4o", "anthropic/claude-sonnet-4-20250514")
@@ -110,13 +110,9 @@ def build_react_graph(
     all_tools = observation_tools + action_tools
     llm_with_tools = llm.bind_tools(all_tools)
 
-    role_key = (role_name or "").strip().replace("-", "_").replace(" ", "_")
-    use_role_prefix = role_key not in {"", "llm"}
-    llm_node_name = f"{role_key}_llm" if use_role_prefix else "llm"
-    obs_tools_node_name = f"{role_key}_obs_tools" if use_role_prefix else "obs_tools"
-    action_tools_node_name = (
-        f"{role_key}_action_tools" if use_role_prefix else "action_tools"
-    )
+    llm_node_name = "think"
+    obs_tools_node_name = "observe"
+    action_tools_node_name = "act"
 
     # Tool execution node
     tool_node = ToolNode(all_tools)
@@ -201,6 +197,7 @@ def build_react_graph(
             _safe_emit(
                 "llm.generation",
                 {
+                    "content": response.content or "",
                     "content_preview": (response.content or "")[:200],
                     "tool_call_count": len(response.tool_calls or []),
                     "model_name": normalize_model_name(model_name),
@@ -233,8 +230,8 @@ def build_react_graph(
             # Return empty response to prevent graph from crashing
             return {"messages": [AIMessage(content=f"Error: {str(e)}")]}
 
-    def route_after_llm(state: AgentState) -> str:
-        """Route based on the LLM's last message."""
+    def decide_next_step(state: AgentState) -> str:
+        """Choose next stage based on the LLM's latest tool calls."""
         last_message = state["messages"][-1]
 
         # No tool calls -> default to wait (END)
@@ -260,7 +257,7 @@ def build_react_graph(
 
     graph.add_conditional_edges(
         llm_node_name,
-        route_after_llm,
+        decide_next_step,
         {
             "obs_tools": obs_tools_node_name,
             "action_tools": action_tools_node_name,

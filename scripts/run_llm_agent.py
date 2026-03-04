@@ -22,6 +22,7 @@ from overcooked_ai_py.agents.llm import LLMAgent, WorkerAgent, Planner
 from overcooked_ai_py.agents.llm.observability import (
     FileRunLogger,
     LangFuseReporter,
+    ObservabilityHub,
     build_run_context,
 )
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
@@ -73,14 +74,19 @@ def main():
     langfuse_enabled = bool(
         os.getenv("LANGFUSE_PUBLIC_KEY") and os.getenv("LANGFUSE_SECRET_KEY")
     )
-    invoke_config = LangFuseReporter(
+    langfuse = LangFuseReporter(
         enabled=langfuse_enabled,
         context=run_context,
-    ).build_invoke_config({})
+    )
+    hub = ObservabilityHub(
+        file_logger=sink,
+        langfuse=langfuse if langfuse_enabled else None,
+    )
+    invoke_config = hub.build_invoke_config({})
 
     def safe_emit(event_type, payload, step=None, agent_role="runner"):
         try:
-            sink.emit(event_type, payload, step=step, agent_role=agent_role)
+            hub.emit(event_type, payload, step=step, agent_role=agent_role)
         except Exception as exc:  # pragma: no cover - best-effort logging
             if args.debug:
                 print(f"[observability] failed to emit {event_type}: {exc}")
@@ -110,7 +116,7 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
-            observability=sink,
+            observability=hub,
             invoke_config=invoke_config,
         )
         worker_0 = WorkerAgent(
@@ -121,7 +127,7 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
-            observability=sink,
+            observability=hub,
             invoke_config=invoke_config,
         )
         worker_1 = WorkerAgent(
@@ -132,7 +138,7 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
-            observability=sink,
+            observability=hub,
             invoke_config=invoke_config,
         )
         agent_pair = AgentPair(worker_0, worker_1)
@@ -150,7 +156,7 @@ def main():
             horizon=args.horizon,
             api_base=api_base,
             api_key=api_key,
-            observability=sink,
+            observability=hub,
             invoke_config=invoke_config,
         )
         partner = make_greedy_partner(mdp)
@@ -181,6 +187,7 @@ def main():
     print("Running episode...")
     start_time = time.time()
     safe_emit("run.start", {"horizon": args.horizon})
+    hub.start_run()
 
     total_reward = 0
     done = False
@@ -215,19 +222,23 @@ def main():
             pygame.display.flip()
             clock.tick(args.fps)
 
-        joint_action_and_infos = agent_pair.joint_action(state)
-        actions = tuple(a for a, _ in joint_action_and_infos)
-        infos = tuple(info for _, info in joint_action_and_infos)
+        hub.start_step(step)
+        try:
+            joint_action_and_infos = agent_pair.joint_action(state)
+            actions = tuple(a for a, _ in joint_action_and_infos)
+            infos = tuple(info for _, info in joint_action_and_infos)
 
-        next_state, rewards, done, info = env.step(actions, infos)
+            next_state, rewards, done, info = env.step(actions, infos)
 
-        step_reward = rewards if isinstance(rewards, (int, float)) else sum(rewards)
-        total_reward += step_reward
+            step_reward = rewards if isinstance(rewards, (int, float)) else sum(rewards)
+            total_reward += step_reward
 
-        if step_reward > 0 or args.debug:
-            print(f"  Step {step}: actions={actions}, reward={step_reward}, total={total_reward}")
+            if step_reward > 0 or args.debug:
+                print(f"  Step {step}: actions={actions}, reward={step_reward}, total={total_reward}")
 
-        step += 1
+            step += 1
+        finally:
+            hub.end_step()
 
     # Cleanup visualization
     if args.visualize:
@@ -235,6 +246,25 @@ def main():
 
     elapsed = time.time() - start_time
     safe_emit("run.end", {"total_reward": total_reward, "steps": step, "elapsed_s": elapsed})
+    if langfuse_enabled:
+        try:
+            from langfuse import get_client
+
+            trace_id = hub.get_trace_id() or run_context.run_id
+            get_client().create_score(
+                name="episode_reward",
+                value=float(total_reward),
+                trace_id=trace_id,
+                metadata={
+                    "steps": step,
+                    "elapsed_s": elapsed,
+                    "run_id": run_context.run_id,
+                },
+            )
+            get_client().flush()
+        except Exception:
+            pass  # best-effort only
+    hub.end_run({"total_reward": total_reward, "steps": step, "elapsed_s": elapsed})
     print()
     print(f"Episode finished in {step} steps ({elapsed:.1f}s)")
     print(f"Total reward: {total_reward}")

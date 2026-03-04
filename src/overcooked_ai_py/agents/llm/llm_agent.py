@@ -168,71 +168,84 @@ class LLMAgent(Agent):
             (action, action_info): action is one of Action.ALL_ACTIONS,
                 action_info is a dict with metadata
         """
-        # Serialize state to text
-        state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
-
-        # Update tool context
-        set_state(state, self.agent_index)
-
-        # Build history text
-        history_text = self._format_history()
-
-        # Construct prompt with history
-        if history_text:
-            prompt = f"{history_text}\n\nCurrent game state:\n{state_text}\n\nDecide your action."
-        else:
-            prompt = f"Current game state:\n{state_text}\n\nDecide your action."
-
-        # Run LangGraph agent
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        messages = [
-            SystemMessage(content=self._system_prompt),
-            HumanMessage(content=prompt),
-        ]
-
-        # Execute graph with error handling
-        try:
-            invoke_config = {**self.invoke_config, "recursion_limit": 15}
+        if self.observability is not None:
             try:
-                result = self._graph.invoke({"messages": messages}, config=invoke_config)
-            except TypeError as e:
-                if "config" in str(e) or "unexpected keyword argument" in str(e):
-                    result = self._graph.invoke({"messages": messages})
-                else:
-                    raise
-            reasoning = self._extract_reasoning(result["messages"])
-        except Exception as e:
-            # Graph failed - log warning and use fallback
+                self.observability.start_role("llm_agent")
+            except Exception:
+                pass
+
+        try:
+            # Serialize state to text
+            state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
+
+            # Update tool context
+            set_state(state, self.agent_index)
+
+            # Build history text
+            history_text = self._format_history()
+
+            # Construct prompt with history
+            if history_text:
+                prompt = f"{history_text}\n\nCurrent game state:\n{state_text}\n\nDecide your action."
+            else:
+                prompt = f"Current game state:\n{state_text}\n\nDecide your action."
+
+            # Run LangGraph agent
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            messages = [
+                SystemMessage(content=self._system_prompt),
+                HumanMessage(content=prompt),
+            ]
+
+            # Execute graph with error handling
+            try:
+                invoke_config = {**self.invoke_config, "recursion_limit": 15}
+                try:
+                    result = self._graph.invoke({"messages": messages}, config=invoke_config)
+                except TypeError as e:
+                    if "config" in str(e) or "unexpected keyword argument" in str(e):
+                        result = self._graph.invoke({"messages": messages})
+                    else:
+                        raise
+                reasoning = self._extract_reasoning(result["messages"])
+            except Exception as e:
+                # Graph failed - log warning and use fallback
+                if self.debug:
+                    print(f"  [LLMAgent] Graph execution failed: {e}")
+                reasoning = "(graph execution failed)"
+                result = None
+
+            # Extract the action from the tool module
+            chosen = get_chosen_action()
+            if chosen is None:
+                # LLM didn't call an action tool — default to STAY
+                if self.debug:
+                    print(f"  [LLMAgent] No action tool called, defaulting to STAY")
+                chosen = Action.STAY
+
+            # Store in history
+            self._add_to_history(state.timestep, reasoning, chosen)
+
             if self.debug:
-                print(f"  [LLMAgent] Graph execution failed: {e}")
-            reasoning = "(graph execution failed)"
-            result = None
-
-        # Extract the action from the tool module
-        chosen = get_chosen_action()
-        if chosen is None:
-            # LLM didn't call an action tool — default to STAY
-            if self.debug:
-                print(f"  [LLMAgent] No action tool called, defaulting to STAY")
-            chosen = Action.STAY
-
-        # Store in history
-        self._add_to_history(state.timestep, reasoning, chosen)
-
-        if self.debug:
+                action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
+                print(f"  [Step {state.timestep}] Player {self.agent_index} -> {action_name}")
             action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
-            print(f"  [Step {state.timestep}] Player {self.agent_index} -> {action_name}")
-        action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
-        self._safe_emit(
-            "action.commit",
-            {"action": action_name},
-            step=state.timestep,
-            agent_role="llm_agent",
-        )
+            self._safe_emit(
+                "action.commit",
+                {"action": action_name},
+                step=state.timestep,
+                agent_role="llm_agent",
+            )
 
-        action_probs = self.a_probs_from_action(chosen)
-        return chosen, {"action_probs": action_probs}
+            action_probs = self.a_probs_from_action(chosen)
+            return chosen, {"action_probs": action_probs}
+        finally:
+            if self.observability is not None:
+                try:
+                    self.observability.end_role()
+                except Exception:
+                    pass
 
     def reset(self):
         """Reset agent state between episodes."""

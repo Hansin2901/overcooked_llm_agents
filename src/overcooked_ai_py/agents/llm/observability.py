@@ -4,14 +4,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import types
 import uuid
 from typing import Any
 
 try:
-    from langfuse.langchain import CallbackHandler
+    from langfuse import Langfuse
 except Exception:  # pragma: no cover - optional dependency
-    CallbackHandler = None
+    Langfuse = None
 
 
 @dataclass
@@ -184,78 +183,6 @@ def _extract_model_from_llm_result(response: Any) -> str | None:
     return None
 
 
-def _install_langfuse_cost_hook(callback: Any, default_model_name: str) -> None:
-    if callback is None:
-        return
-    if callback.__class__.__module__.startswith("unittest.mock"):
-        return
-    if getattr(callback, "_cost_hook_installed", False):
-        return
-    if not hasattr(callback, "on_llm_end") or not callable(callback.on_llm_end):
-        return
-    if not hasattr(callback, "_detach_observation"):
-        return
-
-    callback._orig_on_llm_end = callback.on_llm_end
-
-    def _on_llm_end(self, response, *, run_id, parent_run_id=None, **kwargs):
-        try:
-            response_generation = response.generations[-1][-1]
-            message = getattr(response_generation, "message", None)
-            if message is not None and hasattr(self, "_convert_message_to_dict"):
-                extracted_response = self._convert_message_to_dict(message)
-            else:
-                extracted_response = getattr(response_generation, "text", None)
-                if extracted_response is None:
-                    extracted_response = str(response_generation)
-
-            usage = _extract_usage_from_llm_result(response)
-            model_name = _extract_model_from_llm_result(response) or default_model_name
-
-            prompt_tokens = usage.get("input") if isinstance(usage, dict) else None
-            completion_tokens = usage.get("output") if isinstance(usage, dict) else None
-            rates = get_model_cost_rates(model_name)
-            cost_details = None
-            if (
-                rates is not None
-                and prompt_tokens is not None
-                and completion_tokens is not None
-            ):
-                input_cost = (prompt_tokens / 1_000_000.0) * rates["input"]
-                output_cost = (completion_tokens / 1_000_000.0) * rates["output"]
-                total_cost = input_cost + output_cost
-                cost_details = {
-                    "input": input_cost,
-                    "output": output_cost,
-                    "total": total_cost,
-                    "input_cost": input_cost,
-                    "output_cost": output_cost,
-                    "total_cost": total_cost,
-                }
-
-            generation = self._detach_observation(run_id)
-            if generation is not None:
-                generation.update(
-                    output=extracted_response,
-                    usage=usage,
-                    usage_details=usage,
-                    input=kwargs.get("inputs"),
-                    model=model_name,
-                    cost_details=cost_details,
-                ).end()
-                self.last_trace_id = generation.trace_id
-        except Exception:
-            return self._orig_on_llm_end(
-                response,
-                run_id=run_id,
-                parent_run_id=parent_run_id,
-                **kwargs,
-            )
-
-    callback.on_llm_end = types.MethodType(_on_llm_end, callback)
-    callback._cost_hook_installed = True
-
-
 def normalize_tags(user_tags: list[str], mode: str, layout: str) -> list[str]:
     tags = [tag.strip() for tag in user_tags if tag and tag.strip()]
     required = [f"mode:{mode}", f"layout:{layout}"]
@@ -269,50 +196,304 @@ class LangFuseReporter:
     def __init__(self, enabled: bool, context: RunContext):
         self.enabled = enabled
         self.context = context
-        self._callback = None
-        if self.enabled and CallbackHandler is not None:
+        self._client = None
+        self._trace = None
+        self._trace_id = None
+        self._active_step = None
+        self._active_role = None
+        if self.enabled and Langfuse is not None:
             try:
-                # Prefer current LangFuse callback signature, fall back for older versions.
-                try:
-                    self._callback = CallbackHandler(
-                        update_trace=True,
-                        trace_context={"trace_id": self.context.run_id},
-                    )
-                except TypeError:
-                    try:
-                        self._callback = CallbackHandler(
-                            session_id=self.context.run_id,
-                            trace_name=self.context.run_name,
-                        )
-                    except TypeError:
-                        self._callback = CallbackHandler()
+                self._client = Langfuse()
             except Exception:
-                # LangFuse is best-effort only; continue with local logging.
-                self._callback = None
-        if self._callback is not None:
-            _install_langfuse_cost_hook(
-                self._callback,
-                normalize_model_name(self.context.model),
-            )
+                self._client = None
 
     def build_invoke_config(self, base_config: dict | None) -> dict:
-        if not self.enabled or self._callback is None:
+        # Graph callback wiring is intentionally disabled to avoid router/node noise.
+        return dict(base_config or {})
+
+    def get_trace_id(self) -> str | None:
+        return self._trace_id
+
+    def start_run(self) -> None:
+        if self._client is None or self._trace is not None:
+            return
+        try:
+            self._trace = self._client.start_span(
+                name=self.context.run_name,
+                metadata={
+                    "run_id": self.context.run_id,
+                    "mode": self.context.mode,
+                    "layout": self.context.layout,
+                    "model": normalize_model_name(self.context.model),
+                    "experiment": self.context.experiment,
+                    "variant": self.context.variant,
+                    "tags": list(self.context.tags),
+                },
+            )
+            self._trace_id = getattr(self._trace, "trace_id", None)
+            try:
+                # Langfuse "Tags" UI column reads trace tags, not metadata["tags"].
+                self._trace.update_trace(
+                    name=self.context.run_name,
+                    session_id=self.context.run_id,
+                    tags=list(self.context.tags),
+                    metadata={
+                        "run_id": self.context.run_id,
+                        "mode": self.context.mode,
+                        "layout": self.context.layout,
+                        "model": normalize_model_name(self.context.model),
+                        "experiment": self.context.experiment,
+                        "variant": self.context.variant,
+                    },
+                )
+                # Current SDK versions can miss tag chips for OTEL-only updates.
+                # Also enqueue explicit ingestion tag updates for reliability.
+                if (
+                    self._trace_id
+                    and hasattr(self._client, "_create_trace_tags_via_ingestion")
+                    and list(self.context.tags)
+                ):
+                    self._client._create_trace_tags_via_ingestion(
+                        trace_id=self._trace_id,
+                        tags=list(self.context.tags),
+                    )
+            except Exception:
+                pass
+        except Exception:
+            self._trace = None
+            self._trace_id = None
+
+    def end_run(self, payload: dict[str, Any]) -> None:
+        self.end_role()
+        self.end_step()
+        if self._trace is None:
+            return
+        try:
+            self._trace.update(output=payload)
+            self._trace.end()
+        except Exception:
+            pass
+        finally:
+            self._trace = None
+        if self._client is not None:
+            try:
+                self._client.flush()
+            except Exception:
+                pass
+
+    def start_step(self, step: int) -> None:
+        if self._trace is None:
+            return
+        if self._active_step is not None:
+            self.end_step()
+        try:
+            self._active_step = self._trace.start_span(
+                name=f"step_{step}",
+                metadata={"step": step},
+            )
+        except Exception:
+            self._active_step = None
+
+    def end_step(self) -> None:
+        self.end_role()
+        if self._active_step is None:
+            return
+        try:
+            self._active_step.end()
+        except Exception:
+            pass
+        finally:
+            self._active_step = None
+
+    def start_role(self, role: str) -> None:
+        if self._active_role is not None:
+            self.end_role()
+        parent = self._active_step or self._trace
+        if parent is None:
+            return
+        try:
+            self._active_role = parent.start_span(
+                name=role,
+                metadata={"agent_role": role},
+            )
+        except Exception:
+            self._active_role = None
+
+    def end_role(self) -> None:
+        if self._active_role is None:
+            return
+        try:
+            self._active_role.end()
+        except Exception:
+            pass
+        finally:
+            self._active_role = None
+
+    def _current_parent(self):
+        return self._active_role or self._active_step or self._trace
+
+    def emit_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        step: int | None,
+        agent_role: str,
+    ) -> None:
+        parent = self._current_parent()
+        if parent is None:
+            return
+        event_payload = payload if isinstance(payload, dict) else {}
+        try:
+            if event_type == "llm.generation":
+                model_name = normalize_model_name(
+                    str(event_payload.get("model_name") or self.context.model)
+                )
+                prompt_tokens = _coerce_int(event_payload.get("prompt_tokens"))
+                completion_tokens = _coerce_int(event_payload.get("completion_tokens"))
+                usage = {}
+                if prompt_tokens is not None:
+                    usage["input"] = prompt_tokens
+                if completion_tokens is not None:
+                    usage["output"] = completion_tokens
+                if prompt_tokens is not None and completion_tokens is not None:
+                    usage["total"] = prompt_tokens + completion_tokens
+
+                estimated_total = event_payload.get("estimated_cost_usd")
+                rates = get_model_cost_rates(model_name)
+                cost_details = None
+                if (
+                    rates is not None
+                    and prompt_tokens is not None
+                    and completion_tokens is not None
+                ):
+                    input_cost = (prompt_tokens / 1_000_000.0) * rates["input"]
+                    output_cost = (completion_tokens / 1_000_000.0) * rates["output"]
+                    total_cost = input_cost + output_cost
+                    cost_details = {
+                        "input": input_cost,
+                        "output": output_cost,
+                        "total": total_cost,
+                        "input_cost": input_cost,
+                        "output_cost": output_cost,
+                        "total_cost": total_cost,
+                    }
+                elif estimated_total is not None:
+                    total_cost = float(estimated_total)
+                    cost_details = {"total": total_cost, "total_cost": total_cost}
+
+                generation = parent.start_generation(
+                    name="llm.generation",
+                    output=event_payload.get("content")
+                    or event_payload.get("content_preview")
+                    or "",
+                    model=model_name,
+                    usage_details=usage or None,
+                    cost_details=cost_details,
+                    metadata={
+                        "event_type": event_type,
+                        "step": step,
+                        "agent_role": agent_role,
+                        "tool_call_count": event_payload.get("tool_call_count"),
+                    },
+                )
+                generation.end()
+                return
+
+            if event_type == "tool.call":
+                tool_name = str(event_payload.get("tool_name") or "tool.call")
+                span = parent.start_span(
+                    name=tool_name,
+                    input=event_payload.get("args", {}),
+                    metadata={
+                        "event_type": event_type,
+                        "step": step,
+                        "agent_role": agent_role,
+                    },
+                )
+                span.end()
+                return
+
+            if event_type in {"planner.assignment", "action.commit", "error"}:
+                parent.update(
+                    metadata={
+                        "last_event_type": event_type,
+                        "last_event_payload": event_payload,
+                        "last_event_step": step,
+                        "last_event_agent_role": agent_role,
+                    }
+                )
+        except Exception:
+            # LangFuse is best-effort only; local JSONL remains source of truth.
+            return
+
+
+class ObservabilityHub:
+    def __init__(
+        self,
+        file_logger: FileRunLogger,
+        langfuse: LangFuseReporter | None,
+    ):
+        self.file_logger = file_logger
+        self.langfuse = langfuse
+        self._current_step: int | None = None
+
+    def build_invoke_config(self, base_config: dict | None) -> dict:
+        if self.langfuse is None:
             return dict(base_config or {})
-        cfg = dict(base_config or {})
-        cfg["callbacks"] = [self._callback]
-        cfg["run_name"] = self.context.run_name
-        normalized_model = normalize_model_name(self.context.model)
-        cost_rates = get_model_cost_rates(self.context.model)
-        cfg["metadata"] = {
-            **cfg.get("metadata", {}),
-            "langfuse_session_id": self.context.run_id,
-            "langfuse_tags": self.context.tags,
-            "ls_model_name": normalized_model,
-        }
-        if cost_rates is not None:
-            cfg["metadata"]["model_cost_input_usd_per_million"] = cost_rates["input"]
-            cfg["metadata"]["model_cost_output_usd_per_million"] = cost_rates["output"]
-        return cfg
+        return self.langfuse.build_invoke_config(base_config)
+
+    def get_trace_id(self) -> str | None:
+        if self.langfuse is None:
+            return None
+        return self.langfuse.get_trace_id()
+
+    def emit(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        step: int | None = None,
+        agent_role: str = "runner",
+    ) -> None:
+        effective_step = self._current_step if step is None else step
+        self.file_logger.emit(
+            event_type,
+            payload,
+            step=effective_step,
+            agent_role=agent_role,
+        )
+        if self.langfuse is not None:
+            self.langfuse.emit_event(
+                event_type,
+                payload,
+                step=effective_step,
+                agent_role=agent_role,
+            )
+
+    def start_run(self) -> None:
+        if self.langfuse is not None:
+            self.langfuse.start_run()
+
+    def end_run(self, payload: dict[str, Any]) -> None:
+        if self.langfuse is not None:
+            self.langfuse.end_run(payload)
+
+    def start_step(self, step: int) -> None:
+        self._current_step = step
+        if self.langfuse is not None:
+            self.langfuse.start_step(step)
+
+    def end_step(self) -> None:
+        if self.langfuse is not None:
+            self.langfuse.end_step()
+        self._current_step = None
+
+    def start_role(self, role: str) -> None:
+        if self.langfuse is not None:
+            self.langfuse.start_role(role)
+
+    def end_role(self) -> None:
+        if self.langfuse is not None:
+            self.langfuse.end_role()
 
 
 def build_run_context(args, mode: str, layout: str, model: str) -> RunContext:

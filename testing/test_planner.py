@@ -359,6 +359,8 @@ class TestPlannerObservability(unittest.TestCase):
         planner._graph.invoke.return_value = {"messages": []}
 
         planner.maybe_replan(state)
+        sink.start_role.assert_called_once_with("planner")
+        sink.end_role.assert_called_once()
         sink.emit.assert_any_call(
             "planner.assignment",
             unittest.mock.ANY,

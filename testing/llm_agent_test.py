@@ -199,6 +199,8 @@ class TestLLMAgentObservability(unittest.TestCase):
                 with patch("overcooked_ai_py.agents.llm.llm_agent.get_chosen_action", return_value=Action.STAY):
                     agent.action(state)
 
+        sink.start_role.assert_called_once_with("llm_agent")
+        sink.end_role.assert_called_once()
         sink.emit.assert_any_call(
             "action.commit",
             unittest.mock.ANY,

@@ -348,6 +348,8 @@ class TestWorkerAgentUnit(unittest.TestCase):
         self.worker._tool_state.set_action(Action.STAY)
 
         self.worker.action(state)
+        sink.start_role.assert_called_once_with("worker_0")
+        sink.end_role.assert_called_once()
         sink.emit.assert_any_call(
             "action.commit",
             unittest.mock.ANY,

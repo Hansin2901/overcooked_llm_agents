@@ -127,88 +127,100 @@ class WorkerAgent(Agent):
         """
         # Step 1: Trigger planner if needed (first worker to call triggers it)
         self.planner.maybe_replan(state)
-
-        # Step 2: Read this worker's task
-        task = self.planner.get_task(self.worker_id)
-        task_text = (
-            task.description
-            if task
-            else "No task assigned. Wait for instructions."
-        )
-
-        # Step 3: Run worker LLM
-        state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
-        self._tool_state.set_state(state, self.agent_index)
-
-        prompt = (
-            f"Your current task: {task_text}\n\n"
-            f"Current game state:\n{state_text}\n\n"
-            f"Choose one action to execute your task."
-        )
-
-        messages = [
-            SystemMessage(content=self._system_prompt),
-            HumanMessage(content=prompt),
-        ]
-
-        # Invoke with recursion limit to prevent infinite observation tool loops
-        # Max 15 steps allows ~5 observation calls before forcing action choice
-        if self.debug:
-            print(f"  [{self.worker_id}] Invoking graph (step {state.timestep})...")
+        if self.observability is not None:
+            try:
+                self.observability.start_role(self.worker_id)
+            except Exception:
+                pass
 
         try:
-            invoke_config = {**self.invoke_config, "recursion_limit": 15}
-            try:
-                self._graph.invoke(
-                    {"messages": messages},
-                    config=invoke_config,
-                )
-            except TypeError as e:
-                # Unit tests may stub invoke(messages) without config support.
-                if "config" in str(e) or "unexpected keyword argument" in str(e):
-                    self._graph.invoke({"messages": messages})
-                else:
-                    raise
-            if self.debug:
-                print(f"  [{self.worker_id}] Graph completed")
-        except Exception as e:
-            if self.debug:
-                print(f"  [{self.worker_id}] Graph error: {e}")
-            # On error, default to STAY
-            self._tool_state.chosen_action = Action.STAY
-
-        # Step 4: Get action
-        chosen = self._tool_state.chosen_action
-        if chosen is None:
-            if self.debug:
-                print(f"  [{self.worker_id}] No action chosen, defaulting to STAY")
-            chosen = Action.STAY
-
-        # Step 5: Track task progress
-        if task:
-            task.steps_active += 1
-
-        if self.debug:
-            action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
-            player = state.players[self.agent_index]
-            held = player.held_object.name if player.held_object else "nothing"
-            print(
-                f"  [Step {state.timestep}] {self.worker_id} at {player.position} "
-                f"holding {held} → {action_name}"
+            # Step 2: Read this worker's task
+            task = self.planner.get_task(self.worker_id)
+            task_text = (
+                task.description
+                if task
+                else "No task assigned. Wait for instructions."
             )
-        action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
-        self._safe_emit(
-            "action.commit",
-            {
-                "action": action_name,
-                "task": task.description if task else None,
-            },
-            step=state.timestep,
-            agent_role=self.worker_id,
-        )
 
-        action_probs = self.a_probs_from_action(chosen)
-        return chosen, {"action_probs": action_probs}
+            # Step 3: Run worker LLM
+            state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
+            self._tool_state.set_state(state, self.agent_index)
+
+            prompt = (
+                f"Your current task: {task_text}\n\n"
+                f"Current game state:\n{state_text}\n\n"
+                f"Choose one action to execute your task."
+            )
+
+            messages = [
+                SystemMessage(content=self._system_prompt),
+                HumanMessage(content=prompt),
+            ]
+
+            # Invoke with recursion limit to prevent infinite observation tool loops
+            # Max 15 steps allows ~5 observation calls before forcing action choice
+            if self.debug:
+                print(f"  [{self.worker_id}] Invoking graph (step {state.timestep})...")
+
+            try:
+                invoke_config = {**self.invoke_config, "recursion_limit": 15}
+                try:
+                    self._graph.invoke(
+                        {"messages": messages},
+                        config=invoke_config,
+                    )
+                except TypeError as e:
+                    # Unit tests may stub invoke(messages) without config support.
+                    if "config" in str(e) or "unexpected keyword argument" in str(e):
+                        self._graph.invoke({"messages": messages})
+                    else:
+                        raise
+                if self.debug:
+                    print(f"  [{self.worker_id}] Graph completed")
+            except Exception as e:
+                if self.debug:
+                    print(f"  [{self.worker_id}] Graph error: {e}")
+                # On error, default to STAY
+                self._tool_state.chosen_action = Action.STAY
+
+            # Step 4: Get action
+            chosen = self._tool_state.chosen_action
+            if chosen is None:
+                if self.debug:
+                    print(f"  [{self.worker_id}] No action chosen, defaulting to STAY")
+                chosen = Action.STAY
+
+            # Step 5: Track task progress
+            if task:
+                task.steps_active += 1
+
+            if self.debug:
+                action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
+                player = state.players[self.agent_index]
+                held = player.held_object.name if player.held_object else "nothing"
+                print(
+                    f"  [Step {state.timestep}] {self.worker_id} at {player.position} "
+                    f"holding {held} → {action_name}"
+                )
+            action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
+            self._safe_emit(
+                "action.commit",
+                {
+                    "action": action_name,
+                    "task": task.description if task else None,
+                },
+                step=state.timestep,
+                agent_role=self.worker_id,
+            )
+
+            action_probs = self.a_probs_from_action(chosen)
+            return chosen, {"action_probs": action_probs}
+        finally:
+            if self.observability is not None:
+                try:
+                    self.observability.end_role()
+                except Exception:
+                    pass
 
     def reset(self):
         """Reset worker state for a new episode."""

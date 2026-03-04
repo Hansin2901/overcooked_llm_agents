@@ -263,7 +263,7 @@ class TestGraphBuilder(unittest.TestCase):
             )
             self.assertTrue(has_system_message)
 
-    def test_graph_nodes_include_role_prefix(self):
+    def test_graph_nodes_use_stable_neutral_names(self):
         graph = build_react_graph(
             model_name=self.model_name,
             system_prompt=self.system_prompt,
@@ -275,9 +275,9 @@ class TestGraphBuilder(unittest.TestCase):
             role_name="worker_0",
         )
         node_names = set(graph.get_graph().nodes.keys())
-        self.assertIn("worker_0_llm", node_names)
-        self.assertIn("worker_0_obs_tools", node_names)
-        self.assertIn("worker_0_action_tools", node_names)
+        self.assertIn("think", node_names)
+        self.assertIn("observe", node_names)
+        self.assertIn("act", node_names)
 
     @patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
     def test_observability_receives_llm_generation_event(self, mock_llm_class):
@@ -368,6 +368,7 @@ class TestGraphBuilder(unittest.TestCase):
         ]
         self.assertTrue(generation_calls)
         payload = generation_calls[0].args[1]
+        self.assertEqual(payload["content"], "reasoning")
         self.assertEqual(payload["model_name"], "moonshotai.kimi-k2.5")
         self.assertEqual(payload["prompt_tokens"], 1000)
         self.assertEqual(payload["completion_tokens"], 500)
