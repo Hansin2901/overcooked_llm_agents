@@ -10,6 +10,9 @@ from overcooked_ai_py.agents.llm.observability import (
     LangFuseReporter,
     RunContext,
     build_run_context,
+    estimate_model_cost_usd,
+    get_model_cost_rates,
+    normalize_model_name,
     normalize_tags,
 )
 
@@ -81,11 +84,21 @@ class TestLangFuseReporter(unittest.TestCase):
 
     @patch("overcooked_ai_py.agents.llm.observability.CallbackHandler")
     def test_build_invoke_config_sets_run_name_and_metadata(self, mock_handler):
-        reporter = LangFuseReporter(enabled=True, context=self.ctx)
+        ctx = RunContext(
+            run_id="r3",
+            run_name="bench-c",
+            mode="llm",
+            layout="cramped_room",
+            model="openai/moonshotai.kimi-k2.5",
+        )
+        reporter = LangFuseReporter(enabled=True, context=ctx)
         cfg = reporter.build_invoke_config({"recursion_limit": 15})
         self.assertEqual(cfg["run_name"], "bench-c")
         self.assertEqual(cfg["metadata"]["langfuse_session_id"], "r3")
-        self.assertEqual(cfg["metadata"]["langfuse_tags"], self.ctx.tags)
+        self.assertEqual(cfg["metadata"]["langfuse_tags"], ctx.tags)
+        self.assertEqual(cfg["metadata"]["ls_model_name"], "moonshotai.kimi-k2.5")
+        self.assertEqual(cfg["metadata"]["model_cost_input_usd_per_million"], 0.6)
+        self.assertEqual(cfg["metadata"]["model_cost_output_usd_per_million"], 3.03)
 
     @patch("overcooked_ai_py.agents.llm.observability.CallbackHandler")
     def test_prefers_current_callback_signature(self, mock_handler):
@@ -140,6 +153,25 @@ class TestRunContextFactory(unittest.TestCase):
         ctx = build_run_context(args, mode="llm", layout="cramped_room", model="gpt-4o")
         self.assertEqual(ctx.mode, "llm")
         self.assertIn("mode:llm", ctx.tags)
+
+
+class TestObservabilityCosts(unittest.TestCase):
+    def test_normalize_model_name(self):
+        self.assertEqual(
+            normalize_model_name("openai/moonshotai.kimi-k2.5"),
+            "moonshotai.kimi-k2.5",
+        )
+        self.assertEqual(normalize_model_name("moonshotai.kimi-k2.5"), "moonshotai.kimi-k2.5")
+
+    def test_estimate_model_cost(self):
+        rates = get_model_cost_rates("openai/moonshotai.kimi-k2.5")
+        self.assertEqual(rates, {"input": 0.6, "output": 3.03})
+        cost = estimate_model_cost_usd(
+            "openai/moonshotai.kimi-k2.5",
+            prompt_tokens=1_000_000,
+            completion_tokens=500_000,
+        )
+        self.assertAlmostEqual(cost, 2.115, places=6)
 
 
 class TestRunScriptCli(unittest.TestCase):

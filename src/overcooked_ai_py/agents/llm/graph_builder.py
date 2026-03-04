@@ -17,6 +17,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+from overcooked_ai_py.agents.llm.observability import (
+    estimate_model_cost_usd,
+    normalize_model_name,
+)
+
 
 class AgentState(TypedDict):
     """State for the agent graph."""
@@ -158,11 +163,51 @@ def build_react_graph(
             if debug and response.content:
                 print(f"  {debug_prefix} {response.content[:200]}")
 
+            usage = getattr(response, "usage_metadata", None)
+            response_metadata = getattr(response, "response_metadata", None)
+            token_usage = {}
+            if isinstance(response_metadata, dict):
+                token_usage = (
+                    response_metadata.get("token_usage")
+                    or response_metadata.get("usage")
+                    or {}
+                )
+            prompt_tokens = None
+            completion_tokens = None
+            total_tokens = None
+            if isinstance(usage, dict):
+                prompt_tokens = usage.get("input_tokens") or usage.get("prompt_tokens")
+                completion_tokens = usage.get("output_tokens") or usage.get(
+                    "completion_tokens"
+                )
+                total_tokens = usage.get("total_tokens")
+            if isinstance(token_usage, dict):
+                prompt_tokens = prompt_tokens or token_usage.get("prompt_tokens")
+                completion_tokens = completion_tokens or token_usage.get(
+                    "completion_tokens"
+                )
+                total_tokens = total_tokens or token_usage.get("total_tokens")
+            if (
+                total_tokens is None
+                and prompt_tokens is not None
+                and completion_tokens is not None
+            ):
+                total_tokens = prompt_tokens + completion_tokens
+            estimated_cost_usd = estimate_model_cost_usd(
+                model_name,
+                prompt_tokens,
+                completion_tokens,
+            )
             _safe_emit(
                 "llm.generation",
                 {
                     "content_preview": (response.content or "")[:200],
                     "tool_call_count": len(response.tool_calls or []),
+                    "model_name": normalize_model_name(model_name),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "estimated_cost_usd": estimated_cost_usd,
                 },
             )
             for tc in response.tool_calls or []:

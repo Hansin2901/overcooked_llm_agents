@@ -63,6 +63,45 @@ class FileRunLogger:
             handle.write("\n")
 
 
+MODEL_COST_USD_PER_1M: dict[str, dict[str, float]] = {
+    "api-gpt-oss-120b": {"input": 0.1500, "output": 0.6000},
+    "api-lightonocr-1b": {"input": 0.0, "output": 0.0500},
+    "api-llama-4-scout": {"input": 0.2000, "output": 0.7800},
+    "api-mistral-small-3.2-2506": {"input": 0.0500, "output": 0.1800},
+    "api-tgpt-embeddings": {"input": 0.0150, "output": 0.0},
+    "minimax.minimax-m2": {"input": 0.3000, "output": 1.2000},
+    "mistral.mistral-large-3-675b-instruct": {"input": 0.5000, "output": 1.5000},
+    "moonshotai.kimi-k2.5": {"input": 0.6000, "output": 3.0300},
+    "us.amazon.nova-2-lite-v1:0": {"input": 0.3300, "output": 2.7500},
+    "us.amazon.nova-premier-v1:0": {"input": 2.5000, "output": 12.5000},
+    "us.deepseek.r1-v1:0": {"input": 1.3500, "output": 5.4000},
+}
+
+
+def normalize_model_name(model_name: str) -> str:
+    if not model_name:
+        return ""
+    return model_name.split("/", 1)[1] if "/" in model_name else model_name
+
+
+def get_model_cost_rates(model_name: str) -> dict[str, float] | None:
+    return MODEL_COST_USD_PER_1M.get(normalize_model_name(model_name))
+
+
+def estimate_model_cost_usd(
+    model_name: str,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+) -> float | None:
+    rates = get_model_cost_rates(model_name)
+    if rates is None or prompt_tokens is None or completion_tokens is None:
+        return None
+    return (
+        (prompt_tokens / 1_000_000.0) * rates["input"]
+        + (completion_tokens / 1_000_000.0) * rates["output"]
+    )
+
+
 def normalize_tags(user_tags: list[str], mode: str, layout: str) -> list[str]:
     tags = [tag.strip() for tag in user_tags if tag and tag.strip()]
     required = [f"mode:{mode}", f"layout:{layout}"]
@@ -103,11 +142,17 @@ class LangFuseReporter:
         cfg = dict(base_config or {})
         cfg["callbacks"] = [self._callback]
         cfg["run_name"] = self.context.run_name
+        normalized_model = normalize_model_name(self.context.model)
+        cost_rates = get_model_cost_rates(self.context.model)
         cfg["metadata"] = {
             **cfg.get("metadata", {}),
             "langfuse_session_id": self.context.run_id,
             "langfuse_tags": self.context.tags,
+            "ls_model_name": normalized_model,
         }
+        if cost_rates is not None:
+            cfg["metadata"]["model_cost_input_usd_per_million"] = cost_rates["input"]
+            cfg["metadata"]["model_cost_output_usd_per_million"] = cost_rates["output"]
         return cfg
 
 
