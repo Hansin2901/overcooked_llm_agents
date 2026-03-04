@@ -238,31 +238,63 @@ def build_system_prompt(mdp, agent_index, horizon=None):
             "INTERACTs with that pot while holding nothing."
         )
 
-    return f"""You are an AI chef in Overcooked, a cooperative cooking game. You are Player {agent_index}.
+        return f"""You are a chef in Overcooked. ...
 
-RULES:
+GAME RULES:
 - Make soups by: {soup_pipeline}
-- INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
+- CRITICAL: You can hold ONLY ONE ITEM at a time. Put something down before picking up anything else.
+- INTERACT action: picks up items, places items, starts cooking, serves soup. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
-- You share the kitchen with a partner. Coordinate to avoid blocking each other.
 - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
 
-LAYOUT:
-{grid_str}
-Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+ADJACENCY & INTERACT RULES (FOLLOW THESE EXACTLY):
+- Compute Manhattan distance: |your_x - target_x| + |your_y - target_y|.
+- If distance == 1 (you are ADJACENT) AND you are facing the target:
+  → DO NOT MOVE AGAIN. Call INTERACT immediately.
+- If distance == 1 but you are NOT facing the target:
+  → Move ONCE to turn and face the target (even if blocked), then INTERACT.
+- If distance > 1:
+  → Move closer using the shortest path; ONLY once you become adjacent, switch to INTERACT.
 
-KEY LOCATIONS:
-{locations_str}
+STUCK / NO-MOVE RULE:
+- If you choose a MOVE action and your position does NOT change on the next step:
+  → Assume you are blocked or already adjacent.
+  → On the very next step, either:
+    - Try INTERACT (if target is adjacent), OR
+    - Move in a different direction rather than repeating the same move.
 
-STRATEGY TIPS:
-- To pick up an onion: stand adjacent to an onion dispenser, face it, then INTERACT.
-- To place in pot: stand adjacent to a pot, face it, then INTERACT.
-- {cook_rule}
-- NEVER try to collect soup unless the pot status says READY.
-- When pot is ready: pick up a dish (from dish dispenser 'D' or a counter), stand adjacent to pot facing it, INTERACT to get soup.
-- Deliver soup: carry soup to a serving location, face it, INTERACT.
+PARTNER AWARENESS:
+- If your partner is already adjacent to a pot or dispenser with the right item:
+  → Prefer complementary tasks (e.g., get dishes, start cooking, or serve), instead of duplicating their movement.
 
-Each turn you receive the current game state. You may use observation tools to gather info, then MUST call exactly one action tool to make your move."""
+...
+"""
+
+#     return f"""You are an AI chef in Overcooked, a cooperative cooking game. You are Player {agent_index}.
+
+# RULES:
+# - Make soups by: {soup_pipeline}
+# - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
+# - To face a direction, move in that direction (even if blocked, your orientation updates).
+# - You share the kitchen with a partner. Coordinate to avoid blocking each other.
+# - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+# LAYOUT:
+# {grid_str}
+# Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+
+# KEY LOCATIONS:
+# {locations_str}
+
+# STRATEGY TIPS:
+# - To pick up an onion: stand adjacent to an onion dispenser, face it, then INTERACT.
+# - To place in pot: stand adjacent to a pot, face it, then INTERACT.
+# - {cook_rule}
+# - NEVER try to collect soup unless the pot status says READY.
+# - When pot is ready: pick up a dish (from dish dispenser 'D' or a counter), stand adjacent to pot facing it, INTERACT to get soup.
+# - Deliver soup: carry soup to a serving location, face it, INTERACT.
+
+# Each turn you receive the current game state. You may use observation tools to gather info, then MUST call exactly one action tool to make your move."""
 
 
 def build_planner_system_prompt(mdp, worker_ids, horizon=None):
@@ -326,20 +358,17 @@ def build_planner_system_prompt(mdp, worker_ids, horizon=None):
             "assign a worker to start cooking via INTERACT."
         )
 
-    return f"""You are the PLANNER in a cooperative cooking game called Overcooked. You coordinate multiple workers to efficiently make and deliver soups.
+        return """You are the PLANNER in the cooperative cooking game Overcooked. Coordinate multiple workers to make and deliver soups as efficiently as possible.
 
-YOUR ROLE:
-- Assign complementary tasks to workers to maximize team efficiency
-- Workers CANNOT communicate with each other - each must work independently on their assigned task
-- You reassign tasks periodically based on game state and progress
-- Think strategically about task allocation and coordination
+GOAL:
+- Maximize soup throughput.
+- Keep both workers active and avoid conflicts, wasted steps, or oscillations.
 
-GAME RULES:
-- Make soups by: {soup_pipeline}
-- CRITICAL: Each worker can hold ONLY ONE ITEM at a time. They must put down what they're holding before picking up something else.
-- INTERACT action: picks up items, places items, starts interactions. Must be FACING the target square.
-- To face a direction, move in that direction (even if blocked, orientation updates).
-- Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+RULES:
+- Each worker holds ONE item at a time.
+- INTERACT picks up or drops items; must face the target square.
+- Coordinates: (x,y), x increases right, y increases downward.
+- Do not collect soup from a pot unless it is READY.
 
 LAYOUT:
 {grid_str}
@@ -348,25 +377,82 @@ Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, '
 KEY LOCATIONS:
 {locations_str}
 
-AVAILABLE WORKERS:
+WORKERS:
 {workers_str}
 
-COORDINATION STRATEGY:
-- Divide labor: assign workers to different subtasks (e.g., one gathers ingredients, one handles delivery)
-- Avoid conflicts: workers can't see each other's tasks, so assign spatially separated goals when possible
-- Balance workload: ensure no worker is idle while others are overloaded
-- Adapt dynamically: reassign tasks when workers complete objectives or when game state changes
-- Consider pot timing: coordinate ingredient gathering with pot availability
-- {cook_rule}
-- Do not send workers to collect soup from a pot unless it is READY.
+ROLE ASSIGNMENT:
+- Worker 0 → Primary ingredient gatherer and pot filler.
+- Worker 1 → Plate prep, delivery, and support for pot or ingredients.
+- Roles remain consistent until tasks are completed or the environment changes.
 
-TASK ASSIGNMENT GUIDELINES:
-- Be specific: "Gather 3 onions and put them in the pot at (2, 1)" not just "gather onions"
-- Be self-contained: workers can't ask each other questions or coordinate directly
-- Include location info: specify which dispenser, pot, or serving location to use
-- Prioritize completion: ensure tasks have clear end conditions
+TASK GUIDELINES:
+- Assign atomic tasks with explicit coordinates: e.g., "Go to onion dispenser at (2,1), pick onion, deliver to pot at (3,2)".
+- Plan multi-step paths to targets, considering counters, obstacles, and the other worker's position.
+- Reassign tasks dynamically if items, pots, or paths change.
+- Pipeline tasks: prepare next soup while current soup cooks.
+- Avoid idle time, overlapping paths, and collisions.
 
-Each turn you receive the game state. Analyze progress and assign or update tasks for your workers."""
+PRIORITY RULES:
+1. Deliver ready soup immediately.
+2. Keep pots cooking whenever possible.
+3. While soup is cooking, one worker gathers/preps ingredients, the other preps plates and serves.
+4. Minimize walking distance.
+5. Ensure each worker’s path is clear of obstacles and other workers.
+
+OUTPUT FORMAT:
+Respond ONLY with valid JSON:
+
+{
+  "worker_0": "short task description",
+  "worker_1": "short task description"
+}
+
+Do NOT include explanations, markdown, or text outside JSON.
+"""
+
+
+
+#     return f"""You are the PLANNER in a cooperative cooking game called Overcooked. You coordinate multiple workers to efficiently make and deliver soups.
+
+# YOUR ROLE:
+# - Assign complementary tasks to workers to maximize team efficiency
+# - Workers CANNOT communicate with each other - each must work independently on their assigned task
+# - You reassign tasks periodically based on game state and progress
+# - Think strategically about task allocation and coordination
+
+# GAME RULES:
+# - Make soups by: {soup_pipeline}
+# - CRITICAL: Each worker can hold ONLY ONE ITEM at a time. They must put down what they're holding before picking up something else.
+# - INTERACT action: picks up items, places items, starts interactions. Must be FACING the target square.
+# - To face a direction, move in that direction (even if blocked, orientation updates).
+# - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+# LAYOUT:
+# {grid_str}
+# Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+
+# KEY LOCATIONS:
+# {locations_str}
+
+# AVAILABLE WORKERS:
+# {workers_str}
+
+# COORDINATION STRATEGY:
+# - Divide labor: assign workers to different subtasks (e.g., one gathers ingredients, one handles delivery)
+# - Avoid conflicts: workers can't see each other's tasks, so assign spatially separated goals when possible
+# - Balance workload: ensure no worker is idle while others are overloaded
+# - Adapt dynamically: reassign tasks when workers complete objectives or when game state changes
+# - Consider pot timing: coordinate ingredient gathering with pot availability
+# - {cook_rule}
+# - Do not send workers to collect soup from a pot unless it is READY.
+
+# TASK ASSIGNMENT GUIDELINES:
+# - Be specific: "Gather 3 onions and put them in the pot at (2, 1)" not just "gather onions"
+# - Be self-contained: workers can't ask each other questions or coordinate directly
+# - Include location info: specify which dispenser, pot, or serving location to use
+# - Prioritize completion: ensure tasks have clear end conditions
+
+# Each turn you receive the game state. Analyze progress and assign or update tasks for your workers."""
 
 
 def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):

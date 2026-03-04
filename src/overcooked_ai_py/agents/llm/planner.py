@@ -50,6 +50,7 @@ class Planner:
         self._system_prompt = None
         self._worker_registry: dict[str, ToolState] = {}
         self._last_plan_step = -1  # Timestep of last planning
+        self._history_size = 5  # how many recent timesteps to summarize
 
     def register_worker(self, worker_id: str, worker_tool_state: ToolState):
         """Register a worker. Called during setup.
@@ -158,11 +159,50 @@ class Planner:
                 )
         status_text = "\n".join(statuses)
 
+        # Build short recent step history from worker ToolState histories
+        step_history_lines = []
+        all_timesteps = set()
+        for ts in self._worker_registry.values():
+            for entry in getattr(ts, "history", []) or []:
+                t = entry.get("timestep")
+                if t is not None:
+                    all_timesteps.add(int(t))
+
+        if all_timesteps:
+            recent_ts = sorted(all_timesteps)[-self._history_size :]
+            step_history_lines.append("Recent step history (up to last 5 steps):")
+            for t in recent_ts:
+                step_line_parts = []
+                for wid, ts in self._worker_registry.items():
+                    # find latest entry for this timestep for this worker
+                    entries = [e for e in getattr(ts, "history", []) or [] if int(e.get("timestep", -1)) == t]
+                    if not entries:
+                        continue
+                    e = entries[-1]
+                    action = e.get("action", "?")
+                    task_desc = e.get("task") or "no task"
+                    step_line_parts.append(f"{wid}: action={action}, task={task_desc!r}")
+                if step_line_parts:
+                    step_history_lines.append(f"  Step {t}: " + " | ".join(step_line_parts))
+
+        history_block = ""
+        if step_history_lines:
+            history_block = "\n".join(step_history_lines) + "\n\n"
+
+        # prompt = (
+        #     f"{history_block}"
+        #     f"Worker statuses:\n{status_text}\n\n"
+        #     f"Current game state:\n{state_text}\n\n"
+        #     "Use the recent step history to avoid repeating unproductive behavior and to continue from what has already been accomplished.\n"
+        #     "Assign short, complementary tasks to your workers based on the current state and recent step history."
+        # )
+
         prompt = (
+            f"{history_block}"
             f"Worker statuses:\n{status_text}\n\n"
             f"Current game state:\n{state_text}\n\n"
-            f"Assign tasks to your workers."
         )
+
 
         messages = [
             SystemMessage(content=self._system_prompt),
