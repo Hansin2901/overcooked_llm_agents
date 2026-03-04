@@ -79,6 +79,23 @@ class TestLangFuseReporter(unittest.TestCase):
         self.assertIn("callbacks", cfg)
         self.assertEqual(cfg["recursion_limit"], 15)
 
+    @patch("overcooked_ai_py.agents.llm.observability.CallbackHandler")
+    def test_build_invoke_config_sets_run_name_and_metadata(self, mock_handler):
+        reporter = LangFuseReporter(enabled=True, context=self.ctx)
+        cfg = reporter.build_invoke_config({"recursion_limit": 15})
+        self.assertEqual(cfg["run_name"], "bench-c")
+        self.assertEqual(cfg["metadata"]["langfuse_session_id"], "r3")
+        self.assertEqual(cfg["metadata"]["langfuse_tags"], self.ctx.tags)
+
+    @patch("overcooked_ai_py.agents.llm.observability.CallbackHandler")
+    def test_prefers_current_callback_signature(self, mock_handler):
+        reporter = LangFuseReporter(enabled=True, context=self.ctx)
+        self.assertIsNotNone(reporter._callback)
+        mock_handler.assert_called_once_with(
+            update_trace=True,
+            trace_context={"trace_id": "r3"},
+        )
+
     def test_langfuse_reporter_disabled_is_noop(self):
         reporter = LangFuseReporter(enabled=False, context=self.ctx)
         cfg = reporter.build_invoke_config({})

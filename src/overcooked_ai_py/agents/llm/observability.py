@@ -79,14 +79,20 @@ class LangFuseReporter:
         self._callback = None
         if self.enabled and CallbackHandler is not None:
             try:
-                # Support both legacy and current LangFuse callback signatures.
+                # Prefer current LangFuse callback signature, fall back for older versions.
                 try:
                     self._callback = CallbackHandler(
-                        session_id=self.context.run_id,
-                        trace_name=self.context.run_name,
+                        update_trace=True,
+                        trace_context={"trace_id": self.context.run_id},
                     )
                 except TypeError:
-                    self._callback = CallbackHandler()
+                    try:
+                        self._callback = CallbackHandler(
+                            session_id=self.context.run_id,
+                            trace_name=self.context.run_name,
+                        )
+                    except TypeError:
+                        self._callback = CallbackHandler()
             except Exception:
                 # LangFuse is best-effort only; continue with local logging.
                 self._callback = None
@@ -96,6 +102,7 @@ class LangFuseReporter:
             return dict(base_config or {})
         cfg = dict(base_config or {})
         cfg["callbacks"] = [self._callback]
+        cfg["run_name"] = self.context.run_name
         cfg["metadata"] = {
             **cfg.get("metadata", {}),
             "langfuse_session_id": self.context.run_id,
@@ -105,7 +112,8 @@ class LangFuseReporter:
 
 
 def build_run_context(args, mode: str, layout: str, model: str) -> RunContext:
-    run_id = uuid.uuid4().hex[:12]
+    # Use full 32-char lowercase hex so it is valid as a LangFuse trace_id.
+    run_id = uuid.uuid4().hex
     default_name = f"{mode}-{layout}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
     run_name = args.run_name or default_name
     user_tags = [tag.strip() for tag in (args.tags or "").split(",")]
