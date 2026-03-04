@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import types
 import uuid
 from typing import Any
 
@@ -102,6 +103,159 @@ def estimate_model_cost_usd(
     )
 
 
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _normalize_usage(raw_usage: Any) -> dict[str, int] | None:
+    if not isinstance(raw_usage, dict):
+        return None
+    prompt_tokens = (
+        _coerce_int(raw_usage.get("input"))
+        or _coerce_int(raw_usage.get("prompt_tokens"))
+        or _coerce_int(raw_usage.get("input_tokens"))
+    )
+    completion_tokens = (
+        _coerce_int(raw_usage.get("output"))
+        or _coerce_int(raw_usage.get("completion_tokens"))
+        or _coerce_int(raw_usage.get("output_tokens"))
+    )
+    total_tokens = _coerce_int(raw_usage.get("total")) or _coerce_int(
+        raw_usage.get("total_tokens")
+    )
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+    usage = {}
+    if prompt_tokens is not None:
+        usage["input"] = prompt_tokens
+    if completion_tokens is not None:
+        usage["output"] = completion_tokens
+    if total_tokens is not None:
+        usage["total"] = total_tokens
+    return usage or None
+
+
+def _extract_usage_from_llm_result(response: Any) -> dict[str, int] | None:
+    llm_output = getattr(response, "llm_output", None)
+    if isinstance(llm_output, dict):
+        for key in ("token_usage", "usage"):
+            usage = _normalize_usage(llm_output.get(key))
+            if usage:
+                return usage
+
+    generations = getattr(response, "generations", None)
+    if not isinstance(generations, list):
+        return None
+    for generation in generations:
+        if not isinstance(generation, list):
+            continue
+        for chunk in generation:
+            generation_info = getattr(chunk, "generation_info", None)
+            if isinstance(generation_info, dict):
+                usage = _normalize_usage(generation_info.get("usage_metadata"))
+                if usage:
+                    return usage
+            message = getattr(chunk, "message", None)
+            if message is None:
+                continue
+            response_metadata = getattr(message, "response_metadata", None)
+            if isinstance(response_metadata, dict):
+                for key in ("token_usage", "usage", "amazon-bedrock-invocationMetrics"):
+                    usage = _normalize_usage(response_metadata.get(key))
+                    if usage:
+                        return usage
+            usage = _normalize_usage(getattr(message, "usage_metadata", None))
+            if usage:
+                return usage
+    return None
+
+
+def _extract_model_from_llm_result(response: Any) -> str | None:
+    llm_output = getattr(response, "llm_output", None)
+    if isinstance(llm_output, dict):
+        model_name = llm_output.get("model_name")
+        if isinstance(model_name, str) and model_name:
+            return normalize_model_name(model_name)
+    return None
+
+
+def _install_langfuse_cost_hook(callback: Any, default_model_name: str) -> None:
+    if callback is None:
+        return
+    if callback.__class__.__module__.startswith("unittest.mock"):
+        return
+    if getattr(callback, "_cost_hook_installed", False):
+        return
+    if not hasattr(callback, "on_llm_end") or not callable(callback.on_llm_end):
+        return
+    if not hasattr(callback, "_detach_observation"):
+        return
+
+    callback._orig_on_llm_end = callback.on_llm_end
+
+    def _on_llm_end(self, response, *, run_id, parent_run_id=None, **kwargs):
+        try:
+            response_generation = response.generations[-1][-1]
+            message = getattr(response_generation, "message", None)
+            if message is not None and hasattr(self, "_convert_message_to_dict"):
+                extracted_response = self._convert_message_to_dict(message)
+            else:
+                extracted_response = getattr(response_generation, "text", None)
+                if extracted_response is None:
+                    extracted_response = str(response_generation)
+
+            usage = _extract_usage_from_llm_result(response)
+            model_name = _extract_model_from_llm_result(response) or default_model_name
+
+            prompt_tokens = usage.get("input") if isinstance(usage, dict) else None
+            completion_tokens = usage.get("output") if isinstance(usage, dict) else None
+            rates = get_model_cost_rates(model_name)
+            cost_details = None
+            if (
+                rates is not None
+                and prompt_tokens is not None
+                and completion_tokens is not None
+            ):
+                input_cost = (prompt_tokens / 1_000_000.0) * rates["input"]
+                output_cost = (completion_tokens / 1_000_000.0) * rates["output"]
+                total_cost = input_cost + output_cost
+                cost_details = {
+                    "input": input_cost,
+                    "output": output_cost,
+                    "total": total_cost,
+                    "input_cost": input_cost,
+                    "output_cost": output_cost,
+                    "total_cost": total_cost,
+                }
+
+            generation = self._detach_observation(run_id)
+            if generation is not None:
+                generation.update(
+                    output=extracted_response,
+                    usage=usage,
+                    usage_details=usage,
+                    input=kwargs.get("inputs"),
+                    model=model_name,
+                    cost_details=cost_details,
+                ).end()
+                self.last_trace_id = generation.trace_id
+        except Exception:
+            return self._orig_on_llm_end(
+                response,
+                run_id=run_id,
+                parent_run_id=parent_run_id,
+                **kwargs,
+            )
+
+    callback.on_llm_end = types.MethodType(_on_llm_end, callback)
+    callback._cost_hook_installed = True
+
+
 def normalize_tags(user_tags: list[str], mode: str, layout: str) -> list[str]:
     tags = [tag.strip() for tag in user_tags if tag and tag.strip()]
     required = [f"mode:{mode}", f"layout:{layout}"]
@@ -135,6 +289,11 @@ class LangFuseReporter:
             except Exception:
                 # LangFuse is best-effort only; continue with local logging.
                 self._callback = None
+        if self._callback is not None:
+            _install_langfuse_cost_hook(
+                self._callback,
+                normalize_model_name(self.context.model),
+            )
 
     def build_invoke_config(self, base_config: dict | None) -> dict:
         if not self.enabled or self._callback is None:

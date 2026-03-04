@@ -9,6 +9,9 @@ from overcooked_ai_py.agents.llm.observability import (
     FileRunLogger,
     LangFuseReporter,
     RunContext,
+    _extract_model_from_llm_result,
+    _extract_usage_from_llm_result,
+    _normalize_usage,
     build_run_context,
     estimate_model_cost_usd,
     get_model_cost_rates,
@@ -172,6 +175,25 @@ class TestObservabilityCosts(unittest.TestCase):
             completion_tokens=500_000,
         )
         self.assertAlmostEqual(cost, 2.115, places=6)
+
+    def test_normalize_usage_extracts_tokens(self):
+        usage = _normalize_usage({"prompt_tokens": 120, "completion_tokens": 30})
+        self.assertEqual(usage, {"input": 120, "output": 30, "total": 150})
+
+    def test_extract_usage_from_llm_result(self):
+        class Dummy:
+            llm_output = {"token_usage": {"prompt_tokens": 100, "completion_tokens": 20}}
+            generations = []
+
+        usage = _extract_usage_from_llm_result(Dummy())
+        self.assertEqual(usage, {"input": 100, "output": 20, "total": 120})
+
+    def test_extract_model_from_llm_result(self):
+        class Dummy:
+            llm_output = {"model_name": "openai/moonshotai.kimi-k2.5"}
+
+        model = _extract_model_from_llm_result(Dummy())
+        self.assertEqual(model, "moonshotai.kimi-k2.5")
 
 
 class TestRunScriptCli(unittest.TestCase):
