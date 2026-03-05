@@ -360,9 +360,11 @@ def build_planner_system_prompt(mdp, worker_ids, horizon=None):
 
         return """You are the PLANNER in the cooperative cooking game Overcooked. Coordinate multiple workers to make and deliver soups as efficiently as possible.
 
-GOAL:
-- Maximize soup throughput.
-- Keep both workers active and avoid conflicts, wasted steps, or oscillations.
+1. Core Principles
+Your planning must always be guided by these three principles:
+- Maximize Efficiency: Minimize the total time required to complete all orders. This is the most critical goal.
+- Maximize Parallelism: Ensure multiple agents are working simultaneously whenever possible to reduce idle time.
+- Ensure Accuracy: Adhere 100% to all action definitions, rules, and constraints outlined below.
 
 RULES:
 - Each worker holds ONE item at a time.
@@ -393,7 +395,7 @@ TASK GUIDELINES:
 - Avoid idle time, overlapping paths, and collisions.
 
 PRIORITY RULES:
-1. Deliver ready soup immediately.
+1. If a soup is ready first complete delivery before doing anything else.
 2. Keep pots cooking whenever possible.
 3. While soup is cooking, one worker gathers/preps ingredients, the other preps plates and serves.
 4. Minimize walking distance.
@@ -409,50 +411,6 @@ Respond ONLY with valid JSON:
 
 Do NOT include explanations, markdown, or text outside JSON.
 """
-
-
-
-#     return f"""You are the PLANNER in a cooperative cooking game called Overcooked. You coordinate multiple workers to efficiently make and deliver soups.
-
-# YOUR ROLE:
-# - Assign complementary tasks to workers to maximize team efficiency
-# - Workers CANNOT communicate with each other - each must work independently on their assigned task
-# - You reassign tasks periodically based on game state and progress
-# - Think strategically about task allocation and coordination
-
-# GAME RULES:
-# - Make soups by: {soup_pipeline}
-# - CRITICAL: Each worker can hold ONLY ONE ITEM at a time. They must put down what they're holding before picking up something else.
-# - INTERACT action: picks up items, places items, starts interactions. Must be FACING the target square.
-# - To face a direction, move in that direction (even if blocked, orientation updates).
-# - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
-
-# LAYOUT:
-# {grid_str}
-# Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
-
-# KEY LOCATIONS:
-# {locations_str}
-
-# AVAILABLE WORKERS:
-# {workers_str}
-
-# COORDINATION STRATEGY:
-# - Divide labor: assign workers to different subtasks (e.g., one gathers ingredients, one handles delivery)
-# - Avoid conflicts: workers can't see each other's tasks, so assign spatially separated goals when possible
-# - Balance workload: ensure no worker is idle while others are overloaded
-# - Adapt dynamically: reassign tasks when workers complete objectives or when game state changes
-# - Consider pot timing: coordinate ingredient gathering with pot availability
-# - {cook_rule}
-# - Do not send workers to collect soup from a pot unless it is READY.
-
-# TASK ASSIGNMENT GUIDELINES:
-# - Be specific: "Gather 3 onions and put them in the pot at (2, 1)" not just "gather onions"
-# - Be self-contained: workers can't ask each other questions or coordinate directly
-# - Include location info: specify which dispenser, pot, or serving location to use
-# - Prioritize completion: ensure tasks have clear end conditions
-
-# Each turn you receive the game state. Analyze progress and assign or update tasks for your workers."""
 
 
 def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):

@@ -198,7 +198,7 @@ class Planner:
         # )
 
         prompt = (
-            f"{history_block}"
+            # f"HISTORY {history_block}"
             f"Worker statuses:\n{status_text}\n\n"
             f"Current game state:\n{state_text}\n\n"
         )
