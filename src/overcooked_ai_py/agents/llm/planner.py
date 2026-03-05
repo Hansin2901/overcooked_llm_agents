@@ -37,6 +37,8 @@ class Planner:
         horizon: Optional[int] = None,
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
+        observability=None,
+        invoke_config: Optional[dict] = None,
     ):
         self.model_name = model_name
         self.replan_interval = replan_interval
@@ -44,6 +46,8 @@ class Planner:
         self.horizon = horizon
         self.api_base = api_base
         self.api_key = api_key
+        self.observability = observability
+        self.invoke_config = dict(invoke_config or {})
 
         self._tool_state = ToolState()  # Planner's own ToolState
         self._graph = None
@@ -80,17 +84,33 @@ class Planner:
         )
 
         self._graph = build_react_graph(
-            self.model_name,
-            self._system_prompt,
-            obs_tools,
-            act_tools,
-            act_names,
+            model_name=self.model_name,
+            system_prompt=self._system_prompt,
+            observation_tools=obs_tools,
+            action_tools=act_tools,
+            action_tool_names=act_names,
             get_chosen_fn=lambda: self._tasks_assigned(),
             debug=self.debug,
             debug_prefix="[Planner]",
             api_base=self.api_base,
             api_key=self.api_key,
+            observability=self.observability,
+            role_name="planner",
         )
+
+    def _safe_emit(self, event_type: str, payload: dict, step: int, agent_role: str):
+        if self.observability is None:
+            return
+        try:
+            self.observability.emit(
+                event_type,
+                payload,
+                step=step,
+                agent_role=agent_role,
+            )
+        except Exception as exc:
+            if self.debug:
+                print(f"  [Planner] observability emit failed: {exc}")
 
     def _tasks_assigned(self) -> Optional[bool]:
         """Check if planner has assigned tasks (termination condition).
@@ -215,29 +235,80 @@ class Planner:
             print(f"  [Planner] Invoking graph (step {state.timestep})...")
 
         try:
-            try:
-                self._graph.invoke(
-                    {"messages": messages},
-                    config={"recursion_limit": 20}
-                )
-            except TypeError as e:
-                # Unit tests may stub invoke(messages) without config support.
-                if "config" in str(e) or "unexpected keyword argument" in str(e):
-                    self._graph.invoke({"messages": messages})
-                else:
-                    raise
-            if self.debug:
-                print(f"  [Planner] Graph completed")
-        except Exception as e:
-            if self.debug:
-                print(f"  [Planner] Graph error: {e}")
+            # Serialize state for the planner (use agent_index=0 for full view)
+            state_text = serialize_state(self._tool_state.mdp, state, 0, self.horizon)
+            self._tool_state.set_state(state, 0)
 
-        self._last_plan_step = state.timestep
-
-        if self.debug:
+            # Include worker statuses
+            statuses = []
             for wid, ts in self._worker_registry.items():
-                if ts.current_task:
-                    print(f"  [Planner] → {wid}: {ts.current_task.description}")
+                status_dict = ts.get_status()
+                if status_dict["status"] == "idle":
+                    statuses.append(f"  {wid} (Player {wid[-1]}): idle")
+                else:
+                    statuses.append(
+                        f"  {wid} (Player {wid[-1]}): {status_dict['status']} - "
+                        f"{status_dict['task']} (active for {status_dict['steps_active']} steps)"
+                    )
+            status_text = "\n".join(statuses)
+
+            prompt = (
+                f"Worker statuses:\n{status_text}\n\n"
+                f"Current game state:\n{state_text}\n\n"
+                f"Assign tasks to your workers."
+            )
+
+            messages = [
+                SystemMessage(content=self._system_prompt),
+                HumanMessage(content=prompt),
+            ]
+
+            # Invoke with recursion limit to prevent infinite loops
+            # Planner may need more steps for complex reasoning
+            if self.debug:
+                print(f"  [Planner] Invoking graph (step {state.timestep})...")
+
+            try:
+                invoke_config = {**self.invoke_config, "recursion_limit": 20}
+                try:
+                    self._graph.invoke(
+                        {"messages": messages},
+                        config=invoke_config,
+                    )
+                except TypeError as e:
+                    # Unit tests may stub invoke(messages) without config support.
+                    if "config" in str(e) or "unexpected keyword argument" in str(e):
+                        self._graph.invoke({"messages": messages})
+                    else:
+                        raise
+                if self.debug:
+                    print(f"  [Planner] Graph completed")
+            except Exception as e:
+                if self.debug:
+                    print(f"  [Planner] Graph error: {e}")
+
+            self._last_plan_step = state.timestep
+            assignments = {
+                wid: (ts.current_task.description if ts.current_task else None)
+                for wid, ts in self._worker_registry.items()
+            }
+            self._safe_emit(
+                "planner.assignment",
+                {"assignments": assignments},
+                step=state.timestep,
+                agent_role="planner",
+            )
+
+            if self.debug:
+                for wid, ts in self._worker_registry.items():
+                    if ts.current_task:
+                        print(f"  [Planner] → {wid}: {ts.current_task.description}")
+        finally:
+            if self.observability is not None:
+                try:
+                    self.observability.end_role()
+                except Exception:
+                    pass
 
     def get_task(self, worker_id: str) -> Optional[Task]:
         """Get a worker's current task. Workers call this to read their own task only.

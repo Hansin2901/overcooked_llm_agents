@@ -331,6 +331,32 @@ class TestWorkerAgentUnit(unittest.TestCase):
         action, info = debug_worker.action(state)
         self.assertIn(action, Action.ALL_ACTIONS)
 
+    def test_worker_emits_action_commit(self):
+        """Test worker emits action.commit event when selecting an action."""
+        sink = Mock()
+        state = self.mdp.get_standard_start_state()
+
+        self.worker.set_agent_index(0)
+        self.worker.set_mdp(self.mdp)
+        self.worker.observability = sink
+
+        mp = MotionPlanner(self.mdp)
+        self.planner.init(self.mdp, mp)
+
+        self.planner._graph = Mock()
+        self.worker._graph = Mock()
+        self.worker._tool_state.set_action(Action.STAY)
+
+        self.worker.action(state)
+        sink.start_role.assert_called_once_with("worker_0")
+        sink.end_role.assert_called_once()
+        sink.emit.assert_any_call(
+            "action.commit",
+            unittest.mock.ANY,
+            step=state.timestep,
+            agent_role="worker_0",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

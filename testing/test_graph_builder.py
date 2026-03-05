@@ -257,12 +257,123 @@ class TestGraphBuilder(unittest.TestCase):
 
             # Check that system prompt is in the messages
             from langchain_core.messages import SystemMessage
-
             has_system_message = any(
                 isinstance(msg, SystemMessage) and msg.content == custom_prompt
                 for msg in call_args
             )
             self.assertTrue(has_system_message)
+
+    def test_graph_nodes_use_stable_neutral_names(self):
+        graph = build_react_graph(
+            model_name=self.model_name,
+            system_prompt=self.system_prompt,
+            observation_tools=self.observation_tools,
+            action_tools=self.action_tools,
+            action_tool_names=self.action_tool_names,
+            get_chosen_fn=lambda: self.action_chosen,
+            debug=False,
+            role_name="worker_0",
+        )
+        node_names = set(graph.get_graph().nodes.keys())
+        self.assertIn("think", node_names)
+        self.assertIn("observe", node_names)
+        self.assertIn("act", node_names)
+
+    @patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
+    def test_observability_receives_llm_generation_event(self, mock_llm_class):
+        from langchain_core.messages import AIMessage
+
+        sink = MagicMock()
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+        mock_llm_with_tools = MagicMock()
+        mock_llm_instance.bind_tools.return_value = mock_llm_with_tools
+        mock_llm_with_tools.invoke.return_value = AIMessage(content="Planner reasoning", tool_calls=[])
+
+        graph = build_react_graph(
+            model_name=self.model_name,
+            system_prompt=self.system_prompt,
+            observation_tools=self.observation_tools,
+            action_tools=self.action_tools,
+            action_tool_names=self.action_tool_names,
+            get_chosen_fn=lambda: self.action_chosen,
+            debug=False,
+            observability=sink,
+            role_name="planner",
+        )
+        graph.invoke({"messages": [("user", "x")]})
+        sink.emit.assert_any_call("llm.generation", unittest.mock.ANY, step=None, agent_role="planner")
+
+    @patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
+    def test_observability_receives_tool_call_event(self, mock_llm_class):
+        from langchain_core.messages import AIMessage
+
+        sink = MagicMock()
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+        mock_llm_with_tools = MagicMock()
+        mock_llm_instance.bind_tools.return_value = mock_llm_with_tools
+        mock_llm_with_tools.invoke.return_value = AIMessage(
+            content="Calling action tool",
+            tool_calls=[{"name": "do_action", "args": {}, "id": "1"}],
+        )
+
+        graph = build_react_graph(
+            model_name=self.model_name,
+            system_prompt=self.system_prompt,
+            observation_tools=self.observation_tools,
+            action_tools=self.action_tools,
+            action_tool_names=self.action_tool_names,
+            get_chosen_fn=lambda: self.action_chosen,
+            debug=False,
+            observability=sink,
+            role_name="planner",
+        )
+        graph.invoke({"messages": [("user", "x")]})
+        sink.emit.assert_any_call("tool.call", unittest.mock.ANY, step=None, agent_role="planner")
+
+    @patch("overcooked_ai_py.agents.llm.graph_builder.ChatLiteLLM")
+    def test_observability_generation_payload_includes_cost(self, mock_llm_class):
+        from langchain_core.messages import AIMessage
+
+        sink = MagicMock()
+        mock_llm_instance = MagicMock()
+        mock_llm_class.return_value = mock_llm_instance
+        mock_llm_with_tools = MagicMock()
+        mock_llm_instance.bind_tools.return_value = mock_llm_with_tools
+        mock_llm_with_tools.invoke.return_value = AIMessage(
+            content="reasoning",
+            tool_calls=[],
+            usage_metadata={
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "total_tokens": 1500,
+            },
+        )
+
+        graph = build_react_graph(
+            model_name="openai/moonshotai.kimi-k2.5",
+            system_prompt=self.system_prompt,
+            observation_tools=self.observation_tools,
+            action_tools=self.action_tools,
+            action_tool_names=self.action_tool_names,
+            get_chosen_fn=lambda: self.action_chosen,
+            debug=False,
+            observability=sink,
+            role_name="planner",
+        )
+        graph.invoke({"messages": [("user", "x")]})
+        generation_calls = [
+            call for call in sink.emit.call_args_list if call.args and call.args[0] == "llm.generation"
+        ]
+        self.assertTrue(generation_calls)
+        payload = generation_calls[0].args[1]
+        self.assertEqual(payload["content"], "reasoning")
+        self.assertEqual(payload["model_name"], "moonshotai.kimi-k2.5")
+        self.assertEqual(payload["prompt_tokens"], 1000)
+        self.assertEqual(payload["completion_tokens"], 500)
+        self.assertEqual(payload["total_tokens"], 1500)
+        self.assertIsNotNone(payload["estimated_cost_usd"])
 
 
 if __name__ == "__main__":
