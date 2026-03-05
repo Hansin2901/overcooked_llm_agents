@@ -45,6 +45,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run LLM agent on Overcooked")
     parser.add_argument("--model", default=None, help="LiteLLM model name (default: from LLM_MODEL env or gpt-4o)")
+    parser.add_argument("--worker-model", default=None, help="LiteLLM model for workers (planner-worker mode only, default: same as --model)")
     parser.add_argument("--layout", default="cramped_room", help="Layout name (default: cramped_room)")
     parser.add_argument("--horizon", type=int, default=200, help="Episode length (default: 200)")
     parser.add_argument("--debug", action="store_true", help="Print LLM reasoning each step")
@@ -62,6 +63,7 @@ def main():
 
     # Read model, API base, and API key from environment if not provided as arguments
     model = args.model or os.getenv("LLM_MODEL") or "gpt-4o"
+    worker_model = args.worker_model or os.getenv("WORKER_MODEL") or model
     api_base = os.getenv("LLM_API_BASE")
     api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
     run_context = build_run_context(
@@ -94,10 +96,12 @@ def main():
     print(f"Agent type: {args.agent_type}")
     print(f"Layout: {args.layout}")
     print(f"Model: {model}")
+    if args.agent_type == "planner-worker":
+        print(f"Planner model: {model}")
+        print(f"Worker model: {worker_model}")
+        print(f"Replan interval: {args.replan_interval}")
     print(f"Run name: {run_context.run_name}")
     print(f"Horizon: {args.horizon}")
-    if args.agent_type == "planner-worker":
-        print(f"Replan interval: {args.replan_interval}")
     if api_base:
         print(f"API Base: {api_base}")
     print()
@@ -122,7 +126,7 @@ def main():
         worker_0 = WorkerAgent(
             planner,
             "worker_0",
-            model_name=model,
+            model_name=worker_model,
             debug=args.debug,
             horizon=args.horizon,
             api_base=api_base,
@@ -133,7 +137,7 @@ def main():
         worker_1 = WorkerAgent(
             planner,
             "worker_1",
-            model_name=model,
+            model_name=worker_model,
             debug=args.debug,
             horizon=args.horizon,
             api_base=api_base,

@@ -133,6 +133,8 @@ def build_react_graph(
 
     def llm_node(state: AgentState) -> dict:
         """Call the LLM with current messages."""
+        import time
+
         messages = state["messages"]
 
         # Prepend system prompt if not already there
@@ -143,10 +145,30 @@ def build_react_graph(
             print(f"  {debug_prefix} Calling LLM...")
 
         try:
+            # Create a span to capture LLM API call latency
+            llm_call_span = None
+            if observability is not None:
+                try:
+                    parent = observability._current_parent() if hasattr(observability, '_current_parent') else None
+                    if parent is not None:
+                        llm_call_span = parent.start_span(name="llm_api_call")
+                except Exception:
+                    pass
+
+            # Measure LLM API call latency
+            llm_start_time = time.time()
             response = _invoke_with_hard_timeout(
                 lambda: llm_with_tools.invoke(messages),
                 llm_timeout_seconds,
             )
+            llm_duration_ms = (time.time() - llm_start_time) * 1000
+
+            # End the LLM call span
+            if llm_call_span is not None:
+                try:
+                    llm_call_span.end()
+                except Exception:
+                    pass
 
             # Unit tests often mock invoke() with plain MagicMock objects.
             # Coerce to AIMessage so LangGraph message channels stay valid.
@@ -205,6 +227,7 @@ def build_react_graph(
                     "completion_tokens": completion_tokens,
                     "total_tokens": total_tokens,
                     "estimated_cost_usd": estimated_cost_usd,
+                    "latency_ms": llm_duration_ms,
                 },
             )
             for tc in response.tool_calls or []:

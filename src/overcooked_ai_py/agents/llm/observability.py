@@ -394,6 +394,7 @@ class LangFuseReporter:
                         "step": step,
                         "agent_role": agent_role,
                         "tool_call_count": event_payload.get("tool_call_count"),
+                        "latency_ms": event_payload.get("latency_ms"),
                     },
                 )
                 generation.end()
