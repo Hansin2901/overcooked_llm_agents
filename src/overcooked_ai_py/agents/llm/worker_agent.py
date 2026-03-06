@@ -191,11 +191,22 @@ class WorkerAgent(Agent):
             state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
             self._tool_state.set_state(state, self.agent_index)
 
-            prompt = (
-                f"Your current task: {task_text}\n\n"
-                f"Current game state:\n{state_text}\n\n"
-                f"Choose one action to execute your task."
-            )
+            # Build history text
+            history_text = self._format_history()
+
+            if history_text:
+                prompt = (
+                    f"{history_text}\n\n"
+                    f"Your current task: {task_text}\n\n"
+                    f"Current game state:\n{state_text}\n\n"
+                    f"Choose one action to execute your task."
+                )
+            else:
+                prompt = (
+                    f"Your current task: {task_text}\n\n"
+                    f"Current game state:\n{state_text}\n\n"
+                    f"Choose one action to execute your task."
+                )
 
             messages = [
                 SystemMessage(content=self._system_prompt),
@@ -235,6 +246,17 @@ class WorkerAgent(Agent):
                     print(f"  [{self.worker_id}] No action chosen, defaulting to STAY")
                 chosen = Action.STAY
 
+            # Record history
+            player = state.players[self.agent_index]
+            held = player.held_object.name if player.held_object else "nothing"
+            self._add_to_history(
+                timestep=state.timestep,
+                position=player.position,
+                action=chosen,
+                held=held,
+                task_description=task_text,
+            )
+
             # Step 5: Track task progress
             if task:
                 task.steps_active += 1
@@ -273,3 +295,4 @@ class WorkerAgent(Agent):
         self._tool_state.reset()
         self._graph = None
         self._system_prompt = None
+        self._history = []
