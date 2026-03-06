@@ -168,6 +168,157 @@ def create_planner_tools(
         status = worker_registry[worker_id].get_status()
         return json.dumps(status)
 
+    @tool
+    def get_nearby_interactables(worker_id: str) -> str:
+        """Check what objects a worker can currently interact with (Manhattan distance = 1).
+
+        Args:
+            worker_id: "worker_0" or "worker_1"
+
+        Returns:
+            Human-readable description of adjacent objects
+        """
+        if worker_id not in worker_registry:
+            return f"Error: Unknown worker_id '{worker_id}'. Valid workers: {', '.join(sorted(worker_registry.keys()))}"
+
+        worker_state = worker_registry[worker_id]
+        if worker_state.state is None:
+            return f"Worker {worker_id}: state not initialized"
+
+        player = worker_state.state.players[worker_state.agent_index]
+        pos = player.position
+
+        interactables = []
+
+        # Check all 4 directions
+        for direction, direction_name in [
+            (Direction.NORTH, "north"),
+            (Direction.SOUTH, "south"),
+            (Direction.EAST, "east"),
+            (Direction.WEST, "west"),
+        ]:
+            adj_pos = Action.move_in_direction(pos, direction)
+            x, y = adj_pos
+
+            # Check bounds
+            if not (
+                0 <= x < worker_state.mdp.width and 0 <= y < worker_state.mdp.height
+            ):
+                continue
+
+            # Get terrain type
+            terrain = worker_state.mdp.terrain_mtx[y][x]
+            terrain_map = {
+                " ": None,  # floor, skip
+                "X": "counter",
+                "P": "pot",
+                "O": "onion_dispenser",
+                "T": "tomato_dispenser",
+                "D": "dish_dispenser",
+                "S": "serving_location",
+                "#": None,  # wall, skip
+            }
+
+            terrain_name = terrain_map.get(terrain, terrain)
+            if terrain_name is None:
+                continue  # Skip floor and walls
+
+            # Check for objects at this position
+            if terrain_name == "pot" and worker_state.state.has_object(adj_pos):
+                soup = worker_state.state.get_object(adj_pos)
+                if soup.is_ready:
+                    interactables.append(
+                        f"pot at {adj_pos} ({direction_name}) [READY SOUP]"
+                    )
+                elif soup.is_cooking:
+                    ticks_left = soup.cook_time - soup._cooking_tick
+                    interactables.append(
+                        f"pot at {adj_pos} ({direction_name}) [cooking, {ticks_left} ticks left]"
+                    )
+                else:
+                    interactables.append(
+                        f"pot at {adj_pos} ({direction_name}) [{len(soup.ingredients)}/3 ingredients]"
+                    )
+            elif terrain_name == "counter" and worker_state.state.has_object(adj_pos):
+                obj = worker_state.state.get_object(adj_pos)
+                interactables.append(f"{terrain_name} with {obj.name} ({direction_name})")
+            else:
+                interactables.append(f"{terrain_name} ({direction_name})")
+
+        if not interactables:
+            return f"Worker {worker_id} cannot interact with anything from position {pos} (no adjacent objects)"
+
+        return f"Worker {worker_id} can interact with: {', '.join(interactables)}"
+
+    @tool
+    def validate_task_feasibility(worker_id: str, task_description: str) -> str:
+        """Validate if a proposed task is achievable for the worker given current state.
+
+        Args:
+            worker_id: "worker_0" or "worker_1"
+            task_description: The task being considered
+
+        Returns:
+            "FEASIBLE: ..." or "INFEASIBLE: ... Suggest: ..."
+        """
+        if worker_id not in worker_registry:
+            return f"Error: Unknown worker_id '{worker_id}'"
+
+        worker_state = worker_registry[worker_id]
+        if worker_state.state is None:
+            return f"Error: Worker {worker_id} state not initialized"
+
+        player = worker_state.state.players[worker_state.agent_index]
+        task_lower = task_description.lower()
+
+        # Check: trying to pick up when already holding something
+        if any(keyword in task_lower for keyword in ["pick up", "pickup", "grab", "get"]):
+            if player.held_object is not None:
+                held_name = player.held_object.name
+                return f"INFEASIBLE: Worker {worker_id} is already holding {held_name}, cannot pick up another item. Suggest: deliver or drop current item first."
+
+        # Check: trying to deliver ingredient to full pot
+        if "deliver" in task_lower or "add" in task_lower or "put" in task_lower:
+            # Extract pot position if mentioned (simple pattern matching)
+            import re
+
+            pot_match = re.search(r"pot.*?(\(\d+,\s*\d+\))", task_lower)
+            if pot_match:
+                try:
+                    pot_pos_str = pot_match.group(1)
+                    pot_pos = eval(pot_pos_str)  # Convert "(2,0)" to tuple
+
+                    # Check if pot exists and is full
+                    if worker_state.state.has_object(pot_pos):
+                        soup = worker_state.state.get_object(pot_pos)
+                        if soup.name == "soup" and len(soup.ingredients) >= 3:
+                            if soup.is_cooking or soup.is_ready:
+                                return f"INFEASIBLE: Pot at {pot_pos} is already cooking or ready (3/3 ingredients). Suggest: wait for soup to finish or choose different pot."
+                            else:
+                                return f"INFEASIBLE: Pot at {pot_pos} is full (3/3 ingredients) but not cooking. Suggest: worker with empty hands should interact to start cooking."
+                except:
+                    pass  # If position parsing fails, skip this check
+
+        # Check: trying to pick up soup without dish
+        if (
+            "pick up soup" in task_lower
+            or "collect soup" in task_lower
+            or "get soup" in task_lower
+        ):
+            if player.held_object is None or player.held_object.name != "dish":
+                return f"INFEASIBLE: Worker {worker_id} needs to be holding a dish to pick up soup. Suggest: get a dish from dispenser first."
+
+        # Check: trying to serve without holding soup
+        if "serve" in task_lower or "deliver to serving" in task_lower:
+            if player.held_object is None:
+                return f"INFEASIBLE: Worker {worker_id} has empty hands, cannot serve. Suggest: pick up soup with dish first."
+            elif player.held_object.name != "soup":
+                held_name = player.held_object.name
+                return f"INFEASIBLE: Worker {worker_id} is holding {held_name}, not soup. Suggest: pick up soup with dish before serving."
+
+        # If no issues detected, task seems feasible
+        return f"FEASIBLE: Task '{task_description}' appears achievable for {worker_id}"
+
     # -------------------------------------------------------------------
     # Action Tools (termination)
     # -------------------------------------------------------------------
@@ -221,7 +372,14 @@ def create_planner_tools(
     # Collect and return
     # -------------------------------------------------------------------
 
-    observation_tools = [get_surroundings, get_pot_details, check_path, get_worker_status]
+    observation_tools = [
+        get_surroundings,
+        get_pot_details,
+        check_path,
+        get_worker_status,
+        get_nearby_interactables,
+        validate_task_feasibility,
+    ]
     action_tools = [assign_tasks]
     action_tool_names = {"assign_tasks"}
     return observation_tools, action_tools, action_tool_names

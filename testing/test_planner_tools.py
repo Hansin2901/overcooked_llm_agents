@@ -6,8 +6,52 @@ import unittest
 from overcooked_ai_py.agents.llm.planner_tools import create_planner_tools
 from overcooked_ai_py.agents.llm.task import Task
 from overcooked_ai_py.agents.llm.tool_state import ToolState
-from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
+from overcooked_ai_py.mdp.overcooked_mdp import Direction, ObjectState, OvercookedGridworld
 from overcooked_ai_py.planning.planners import MotionPlanner
+
+
+def create_mock_state(mdp, workers: list = None, pots: list = None, objects: dict = None):
+    """Helper to create mock game states for testing."""
+    from overcooked_ai_py.mdp.overcooked_mdp import PlayerState, SoupState
+
+    state = mdp.get_standard_start_state()
+
+    if workers:
+        players = list(state.players)
+        for i, worker_config in enumerate(workers):
+            if i >= len(players):
+                break
+            pos, direction, held_obj = worker_config
+            players[i] = PlayerState(pos, direction, held_object=held_obj)
+        state.players = tuple(players)
+
+    if pots:
+        for pot_config in pots:
+            pos, num_onions, num_tomatoes, cooking = pot_config
+            cooking_tick = 1 if cooking else 0
+            soup = SoupState.get_soup(
+                pos,
+                num_onions=num_onions,
+                num_tomatoes=num_tomatoes,
+                cooking_tick=cooking_tick,
+                cook_time=20,
+            )
+            state.objects[pos] = soup
+
+    if objects:
+        state.objects.update(objects)
+
+    return state
+
+
+def assert_tool_output_format(test_case, output: str, expected_patterns: list):
+    """Helper to assert tool output contains expected patterns."""
+    for pattern in expected_patterns:
+        test_case.assertIn(
+            pattern.lower(),
+            output.lower(),
+            f"Expected pattern '{pattern}' not found in output: {output}",
+        )
 
 
 class TestPlannerTools(unittest.TestCase):
@@ -49,8 +93,8 @@ class TestPlannerTools(unittest.TestCase):
 
     def test_factory_creates_correct_tools(self):
         """Test that the factory creates the expected number and types of tools."""
-        # Should have 4 observation tools
-        self.assertEqual(len(self.obs_tools), 4)
+        # Should have 6 observation tools
+        self.assertEqual(len(self.obs_tools), 6)
 
         # Should have 1 action tool
         self.assertEqual(len(self.action_tools), 1)
@@ -60,7 +104,14 @@ class TestPlannerTools(unittest.TestCase):
 
         # Check observation tool names
         obs_tool_names = {tool.name for tool in self.obs_tools}
-        expected_obs_names = {"get_surroundings", "get_pot_details", "check_path", "get_worker_status"}
+        expected_obs_names = {
+            "get_surroundings",
+            "get_pot_details",
+            "check_path",
+            "get_worker_status",
+            "get_nearby_interactables",
+            "validate_task_feasibility",
+        }
         self.assertEqual(obs_tool_names, expected_obs_names)
 
         # Check action tool name
@@ -261,6 +312,104 @@ class TestPlannerTools(unittest.TestCase):
         assignments2 = json.dumps({"worker_0": "Task 2"})
         assign_tasks.invoke({"assignments": assignments2})
         self.assertEqual(self.worker_0_state.current_task.description, "Task 2")
+
+    def test_fixtures_available(self):
+        """Test that test fixtures can be imported and used."""
+        from testing.fixtures.planner_test_fixtures import (
+            create_worker_at_dispenser,
+            create_worker_holding_onion,
+            create_pot_with_ingredients,
+        )
+
+        # Should be callable
+        self.assertTrue(callable(create_worker_at_dispenser))
+        self.assertTrue(callable(create_worker_holding_onion))
+        self.assertTrue(callable(create_pot_with_ingredients))
+
+    def test_mock_utilities_work(self):
+        """Test that mock utilities simplify test setup."""
+        state = create_mock_state(
+            self.mdp,
+            workers=[
+                ((1, 1), Direction.NORTH, ObjectState("onion", (1, 1))),
+                ((3, 2), Direction.SOUTH, None),
+            ],
+            pots=[
+                ((2, 0), 2, 0, False),
+            ],
+        )
+
+        self.assertEqual(state.players[0].position, (1, 1))
+        self.assertIsNotNone(state.players[0].held_object)
+        self.assertEqual(state.players[0].held_object.name, "onion")
+        self.assertTrue(state.has_object((2, 0)))
+
+        test_output = "Worker worker_0 is at position (1, 1), holding: onion"
+        assert_tool_output_format(
+            self,
+            test_output,
+            ["worker_0", "position (1, 1)", "holding", "onion"],
+        )
+
+
+    def test_get_nearby_interactables_with_adjacent_objects(self):
+        """Test get_nearby_interactables returns objects within distance 1."""
+        # Set up: place worker_0 at (1, 1) in cramped_room layout
+        state = self.mdp.get_standard_start_state()
+        from overcooked_ai_py.mdp.overcooked_mdp import PlayerState
+
+        # Place worker at position where we know adjacent objects
+        state.players = (
+            PlayerState((1, 1), Direction.NORTH),
+            state.players[1],
+        )
+        self.worker_0_state.set_state(state, 0)
+        self.planner_tool_state.set_state(state, 0)
+
+        # Re-create tools with updated state
+        self.obs_tools, _, _ = create_planner_tools(
+            self.planner_tool_state, self.worker_registry
+        )
+
+        # Call get_nearby_interactables
+        get_nearby = next(
+            t for t in self.obs_tools if t.name == "get_nearby_interactables"
+        )
+        result = get_nearby.invoke({"worker_id": "worker_0"})
+
+        # Should list adjacent objects
+        self.assertIn("worker_0", result)
+        self.assertIn("can interact with", result.lower())
+
+    def test_validate_task_feasibility_pickup_with_full_hands(self):
+        """Test validation catches worker trying to pick up when already holding object."""
+        # Set worker_0 holding onion
+        state = self.mdp.get_standard_start_state()
+        from overcooked_ai_py.mdp.overcooked_mdp import PlayerState, ObjectState
+
+        onion = ObjectState("onion", (1, 1))
+        state.players = (
+            PlayerState((1, 1), Direction.NORTH, held_object=onion),
+            state.players[1],
+        )
+        self.worker_0_state.set_state(state, 0)
+        self.planner_tool_state.set_state(state, 0)
+
+        self.obs_tools, _, _ = create_planner_tools(
+            self.planner_tool_state, self.worker_registry
+        )
+
+        validate = next(
+            t for t in self.obs_tools if t.name == "validate_task_feasibility"
+        )
+        result = validate.invoke({
+            "worker_id": "worker_0",
+            "task_description": "Pick up a dish from dish dispenser"
+        })
+
+        # Should indicate infeasible
+        self.assertIn("INFEASIBLE", result)
+        self.assertIn("already holding", result.lower())
 
 
 if __name__ == "__main__":
