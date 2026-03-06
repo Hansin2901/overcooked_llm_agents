@@ -97,33 +97,6 @@ class TestPlannerTools(unittest.TestCase):
             create_planner_tools(self.planner_tool_state, self.worker_registry)
         )
 
-    def test_factory_creates_correct_tools(self):
-        """Test that the factory creates the expected number and types of tools."""
-        # Should have 6 observation tools
-        self.assertEqual(len(self.obs_tools), 6)
-
-        # Should have 1 action tool
-        self.assertEqual(len(self.action_tools), 1)
-
-        # Action tool names should contain assign_tasks
-        self.assertEqual(self.action_tool_names, {"assign_tasks"})
-
-        # Check observation tool names
-        obs_tool_names = {tool.name for tool in self.obs_tools}
-        expected_obs_names = {
-            "get_surroundings",
-            "get_pot_details",
-            "check_path",
-            "get_worker_status",
-            "get_nearby_interactables",
-            "validate_task_feasibility",
-        }
-        self.assertEqual(obs_tool_names, expected_obs_names)
-
-        # Check action tool name
-        action_tool_names = {tool.name for tool in self.action_tools}
-        self.assertEqual(action_tool_names, {"assign_tasks"})
-
     def test_assign_tasks_valid_json(self):
         """Test assign_tasks with valid JSON creates Tasks in correct worker ToolStates."""
         # Find the assign_tasks tool
@@ -221,103 +194,6 @@ class TestPlannerTools(unittest.TestCase):
         # Should indicate error
         self.assertIn("must be a string", result)
 
-    def test_get_worker_status_idle(self):
-        """Test get_worker_status returns correct status for idle worker."""
-        # Find the get_worker_status tool
-        get_worker_status = next(
-            t for t in self.obs_tools if t.name == "get_worker_status"
-        )
-
-        # Worker should be idle initially
-        result = get_worker_status.invoke({"worker_id": "worker_0"})
-
-        # Parse the JSON response
-        status = json.loads(result)
-        self.assertEqual(status["status"], "idle")
-        self.assertIsNone(status["task"])
-
-    def test_get_worker_status_working(self):
-        """Test get_worker_status returns correct status for working worker."""
-        # Assign a task to worker_0
-        task = Task(
-            description="Pick up onion",
-            worker_id="worker_0",
-            created_at=0,
-            completed=False,
-            steps_active=5,
-        )
-        self.worker_0_state.set_task(task)
-
-        # Get status
-        get_worker_status = next(
-            t for t in self.obs_tools if t.name == "get_worker_status"
-        )
-        result = get_worker_status.invoke({"worker_id": "worker_0"})
-
-        # Parse response
-        status = json.loads(result)
-        self.assertEqual(status["status"], "working")
-        self.assertEqual(status["task"], "Pick up onion")
-        self.assertEqual(status["steps_active"], 5)
-
-    def test_get_worker_status_completed(self):
-        """Test get_worker_status returns correct status for completed task."""
-        # Assign a completed task to worker_0
-        task = Task(
-            description="Deliver soup",
-            worker_id="worker_0",
-            created_at=0,
-            completed=True,
-            steps_active=10,
-        )
-        self.worker_0_state.set_task(task)
-
-        # Get status
-        get_worker_status = next(
-            t for t in self.obs_tools if t.name == "get_worker_status"
-        )
-        result = get_worker_status.invoke({"worker_id": "worker_0"})
-
-        # Parse response
-        status = json.loads(result)
-        self.assertEqual(status["status"], "completed")
-        self.assertEqual(status["task"], "Deliver soup")
-        self.assertEqual(status["steps_active"], 10)
-
-    def test_get_worker_status_unknown_worker(self):
-        """Test get_worker_status with unknown worker_id returns error."""
-        get_worker_status = next(
-            t for t in self.obs_tools if t.name == "get_worker_status"
-        )
-
-        result = get_worker_status.invoke({"worker_id": "worker_999"})
-
-        # Should return error message
-        self.assertIn("Error", result)
-        self.assertIn("Unknown worker_id", result)
-        self.assertIn("worker_999", result)
-
-    def test_observation_tools_work(self):
-        """Test that observation tools (get_surroundings, get_pot_details, check_path) work."""
-        # Test get_surroundings
-        get_surroundings = next(
-            t for t in self.obs_tools if t.name == "get_surroundings"
-        )
-        result = get_surroundings.invoke({})
-        self.assertIsInstance(result, str)
-        self.assertIn("up:", result)
-        self.assertIn("down:", result)
-
-        # Test get_pot_details
-        get_pot_details = next(t for t in self.obs_tools if t.name == "get_pot_details")
-        result = get_pot_details.invoke({})
-        self.assertIsInstance(result, str)
-
-        # Test check_path
-        check_path = next(t for t in self.obs_tools if t.name == "check_path")
-        result = check_path.invoke({"target": "pot"})
-        self.assertIsInstance(result, str)
-
     def test_multiple_task_assignments(self):
         """Test assigning tasks multiple times overwrites previous tasks."""
         assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
@@ -369,67 +245,6 @@ class TestPlannerTools(unittest.TestCase):
             test_output,
             ["worker_0", "position (1, 1)", "holding", "onion"],
         )
-
-    def test_get_nearby_interactables_with_adjacent_objects(self):
-        """Test get_nearby_interactables returns objects within distance 1."""
-        # Set up: place worker_0 at (1, 1) in cramped_room layout
-        state = self.mdp.get_standard_start_state()
-        from overcooked_ai_py.mdp.overcooked_mdp import PlayerState
-
-        # Place worker at position where we know adjacent objects
-        state.players = (
-            PlayerState((1, 1), Direction.NORTH),
-            state.players[1],
-        )
-        self.worker_0_state.set_state(state, 0)
-        self.planner_tool_state.set_state(state, 0)
-
-        # Re-create tools with updated state
-        self.obs_tools, _, _ = create_planner_tools(
-            self.planner_tool_state, self.worker_registry
-        )
-
-        # Call get_nearby_interactables
-        get_nearby = next(
-            t for t in self.obs_tools if t.name == "get_nearby_interactables"
-        )
-        result = get_nearby.invoke({"worker_id": "worker_0"})
-
-        # Should list adjacent objects
-        self.assertIn("worker_0", result)
-        self.assertIn("can interact with", result.lower())
-
-    def test_validate_task_feasibility_pickup_with_full_hands(self):
-        """Test validation catches worker trying to pick up when already holding object."""
-        # Set worker_0 holding onion
-        state = self.mdp.get_standard_start_state()
-        from overcooked_ai_py.mdp.overcooked_mdp import PlayerState, ObjectState
-
-        onion = ObjectState("onion", (1, 1))
-        state.players = (
-            PlayerState((1, 1), Direction.NORTH, held_object=onion),
-            state.players[1],
-        )
-        self.worker_0_state.set_state(state, 0)
-        self.planner_tool_state.set_state(state, 0)
-
-        self.obs_tools, _, _ = create_planner_tools(
-            self.planner_tool_state, self.worker_registry
-        )
-
-        validate = next(
-            t for t in self.obs_tools if t.name == "validate_task_feasibility"
-        )
-        result = validate.invoke(
-            {
-                "worker_id": "worker_0",
-                "task_description": "Pick up a dish from dish dispenser",
-            }
-        )
-
-        # Should indicate infeasible
-        self.assertIn("INFEASIBLE", result)
-        self.assertIn("already holding", result.lower())
 
     def test_factory_creates_assignment_only_planner_tools(self):
         """Test that planner observation tool list is empty and only assign_tasks remains."""
