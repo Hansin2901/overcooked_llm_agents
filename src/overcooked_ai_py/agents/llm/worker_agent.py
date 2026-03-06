@@ -267,8 +267,37 @@ Do NOT use tool calls. Output ONLY the JSON object."""
             if self.debug:
                 print(f"  [{self.worker_id}] Invoking LLM (step {state.timestep})...")
 
+            import time
+
+            t_start = time.perf_counter()
             try:
                 response = self._llm.invoke(messages)
+                t_end = time.perf_counter()
+                latency_ms = (t_end - t_start) * 1000
+
+                # Emit LLM generation event with usage stats
+                usage_metadata = getattr(response, "usage_metadata", {}) or {}
+                prompt_tokens = usage_metadata.get("input_tokens", 0)
+                completion_tokens = usage_metadata.get("output_tokens", 0)
+                total_tokens = usage_metadata.get(
+                    "total_tokens", prompt_tokens + completion_tokens
+                )
+
+                self._safe_emit(
+                    "llm.generation",
+                    {
+                        "content": str(response.content),
+                        "content_preview": str(response.content)[:200],
+                        "model_name": self.model_name,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "latency_ms": latency_ms,
+                    },
+                    step=state.timestep,
+                    agent_role=self.worker_id,
+                )
+
                 if self.debug:
                     print(
                         f"  [{self.worker_id}] LLM response: {str(response.content)[:100]}..."
