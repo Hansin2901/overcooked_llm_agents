@@ -1,5 +1,9 @@
 import unittest
+from unittest.mock import Mock, patch
+
 from overcooked_ai_py.agents.llm.llm_agent import LLMAgent
+from overcooked_ai_py.mdp.actions import Action
+from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 
 
 class TestLLMAgentMemory(unittest.TestCase):
@@ -171,6 +175,38 @@ class TestLLMAgentMemoryIntegration(unittest.TestCase):
                 # Should have most recent entries
                 self.assertEqual(agent._history[0]["timestep"], 2)
                 self.assertEqual(agent._history[-1]["timestep"], 4)
+
+
+class TestLLMAgentObservability(unittest.TestCase):
+    def test_llm_agent_emits_action_commit(self):
+        sink = Mock()
+        mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        state = mdp.get_standard_start_state()
+
+        agent = LLMAgent(
+            model_name="gpt-4o",
+            observability=sink,
+            invoke_config={"callbacks": ["dummy-callback"]},
+        )
+        agent.agent_index = 0
+        agent.mdp = mdp
+        agent._system_prompt = "test system prompt"
+        agent._graph = Mock()
+        agent._graph.invoke.return_value = {"messages": []}
+
+        with patch("overcooked_ai_py.agents.llm.llm_agent.serialize_state", return_value="state"):
+            with patch("overcooked_ai_py.agents.llm.llm_agent.set_state"):
+                with patch("overcooked_ai_py.agents.llm.llm_agent.get_chosen_action", return_value=Action.STAY):
+                    agent.action(state)
+
+        sink.start_role.assert_called_once_with("llm_agent")
+        sink.end_role.assert_called_once()
+        sink.emit.assert_any_call(
+            "action.commit",
+            unittest.mock.ANY,
+            step=state.timestep,
+            agent_role="llm_agent",
+        )
 
 
 if __name__ == "__main__":

@@ -37,6 +37,8 @@ class Planner:
         horizon: Optional[int] = None,
         api_base: Optional[str] = None,
         api_key: Optional[str] = None,
+        observability=None,
+        invoke_config: Optional[dict] = None,
     ):
         self.model_name = model_name
         self.replan_interval = replan_interval
@@ -44,12 +46,15 @@ class Planner:
         self.horizon = horizon
         self.api_base = api_base
         self.api_key = api_key
+        self.observability = observability
+        self.invoke_config = dict(invoke_config or {})
 
         self._tool_state = ToolState()  # Planner's own ToolState
         self._graph = None
         self._system_prompt = None
         self._worker_registry: dict[str, ToolState] = {}
         self._last_plan_step = -1  # Timestep of last planning
+        self._history_size = 5  # how many recent timesteps to summarize
 
     def register_worker(self, worker_id: str, worker_tool_state: ToolState):
         """Register a worker. Called during setup.
@@ -79,17 +84,33 @@ class Planner:
         )
 
         self._graph = build_react_graph(
-            self.model_name,
-            self._system_prompt,
-            obs_tools,
-            act_tools,
-            act_names,
+            model_name=self.model_name,
+            system_prompt=self._system_prompt,
+            observation_tools=obs_tools,
+            action_tools=act_tools,
+            action_tool_names=act_names,
             get_chosen_fn=lambda: self._tasks_assigned(),
             debug=self.debug,
             debug_prefix="[Planner]",
             api_base=self.api_base,
             api_key=self.api_key,
+            observability=self.observability,
+            role_name="planner",
         )
+
+    def _safe_emit(self, event_type: str, payload: dict, step: int, agent_role: str):
+        if self.observability is None:
+            return
+        try:
+            self.observability.emit(
+                event_type,
+                payload,
+                step=step,
+                agent_role=agent_role,
+            )
+        except Exception as exc:
+            if self.debug:
+                print(f"  [Planner] observability emit failed: {exc}")
 
     def _tasks_assigned(self) -> Optional[bool]:
         """Check if planner has assigned tasks (termination condition).
@@ -158,11 +179,50 @@ class Planner:
                 )
         status_text = "\n".join(statuses)
 
+        # Build short recent step history from worker ToolState histories
+        step_history_lines = []
+        all_timesteps = set()
+        for ts in self._worker_registry.values():
+            for entry in getattr(ts, "history", []) or []:
+                t = entry.get("timestep")
+                if t is not None:
+                    all_timesteps.add(int(t))
+
+        if all_timesteps:
+            recent_ts = sorted(all_timesteps)[-self._history_size :]
+            step_history_lines.append("Recent step history (up to last 5 steps):")
+            for t in recent_ts:
+                step_line_parts = []
+                for wid, ts in self._worker_registry.items():
+                    # find latest entry for this timestep for this worker
+                    entries = [e for e in getattr(ts, "history", []) or [] if int(e.get("timestep", -1)) == t]
+                    if not entries:
+                        continue
+                    e = entries[-1]
+                    action = e.get("action", "?")
+                    task_desc = e.get("task") or "no task"
+                    step_line_parts.append(f"{wid}: action={action}, task={task_desc!r}")
+                if step_line_parts:
+                    step_history_lines.append(f"  Step {t}: " + " | ".join(step_line_parts))
+
+        history_block = ""
+        if step_history_lines:
+            history_block = "\n".join(step_history_lines) + "\n\n"
+
+        # prompt = (
+        #     f"{history_block}"
+        #     f"Worker statuses:\n{status_text}\n\n"
+        #     f"Current game state:\n{state_text}\n\n"
+        #     "Use the recent step history to avoid repeating unproductive behavior and to continue from what has already been accomplished.\n"
+        #     "Assign short, complementary tasks to your workers based on the current state and recent step history."
+        # )
+
         prompt = (
+            # f"HISTORY {history_block}"
             f"Worker statuses:\n{status_text}\n\n"
             f"Current game state:\n{state_text}\n\n"
-            f"Assign tasks to your workers."
         )
+
 
         messages = [
             SystemMessage(content=self._system_prompt),
@@ -175,29 +235,80 @@ class Planner:
             print(f"  [Planner] Invoking graph (step {state.timestep})...")
 
         try:
-            try:
-                self._graph.invoke(
-                    {"messages": messages},
-                    config={"recursion_limit": 20}
-                )
-            except TypeError as e:
-                # Unit tests may stub invoke(messages) without config support.
-                if "config" in str(e) or "unexpected keyword argument" in str(e):
-                    self._graph.invoke({"messages": messages})
-                else:
-                    raise
-            if self.debug:
-                print(f"  [Planner] Graph completed")
-        except Exception as e:
-            if self.debug:
-                print(f"  [Planner] Graph error: {e}")
+            # Serialize state for the planner (use agent_index=0 for full view)
+            state_text = serialize_state(self._tool_state.mdp, state, 0, self.horizon)
+            self._tool_state.set_state(state, 0)
 
-        self._last_plan_step = state.timestep
-
-        if self.debug:
+            # Include worker statuses
+            statuses = []
             for wid, ts in self._worker_registry.items():
-                if ts.current_task:
-                    print(f"  [Planner] → {wid}: {ts.current_task.description}")
+                status_dict = ts.get_status()
+                if status_dict["status"] == "idle":
+                    statuses.append(f"  {wid} (Player {wid[-1]}): idle")
+                else:
+                    statuses.append(
+                        f"  {wid} (Player {wid[-1]}): {status_dict['status']} - "
+                        f"{status_dict['task']} (active for {status_dict['steps_active']} steps)"
+                    )
+            status_text = "\n".join(statuses)
+
+            prompt = (
+                f"Worker statuses:\n{status_text}\n\n"
+                f"Current game state:\n{state_text}\n\n"
+                f"Assign tasks to your workers."
+            )
+
+            messages = [
+                SystemMessage(content=self._system_prompt),
+                HumanMessage(content=prompt),
+            ]
+
+            # Invoke with recursion limit to prevent infinite loops
+            # Planner may need more steps for complex reasoning
+            if self.debug:
+                print(f"  [Planner] Invoking graph (step {state.timestep})...")
+
+            try:
+                invoke_config = {**self.invoke_config, "recursion_limit": 20}
+                try:
+                    self._graph.invoke(
+                        {"messages": messages},
+                        config=invoke_config,
+                    )
+                except TypeError as e:
+                    # Unit tests may stub invoke(messages) without config support.
+                    if "config" in str(e) or "unexpected keyword argument" in str(e):
+                        self._graph.invoke({"messages": messages})
+                    else:
+                        raise
+                if self.debug:
+                    print(f"  [Planner] Graph completed")
+            except Exception as e:
+                if self.debug:
+                    print(f"  [Planner] Graph error: {e}")
+
+            self._last_plan_step = state.timestep
+            assignments = {
+                wid: (ts.current_task.description if ts.current_task else None)
+                for wid, ts in self._worker_registry.items()
+            }
+            self._safe_emit(
+                "planner.assignment",
+                {"assignments": assignments},
+                step=state.timestep,
+                agent_role="planner",
+            )
+
+            if self.debug:
+                for wid, ts in self._worker_registry.items():
+                    if ts.current_task:
+                        print(f"  [Planner] → {wid}: {ts.current_task.description}")
+        finally:
+            if self.observability is not None:
+                try:
+                    self.observability.end_role()
+                except Exception:
+                    pass
 
     def get_task(self, worker_id: str) -> Optional[Task]:
         """Get a worker's current task. Workers call this to read their own task only.

@@ -33,17 +33,43 @@ class LLMAgent(Agent):
         horizon: episode length (for display in state serialization)
     """
 
-    def __init__(self, model_name="gpt-4o", debug=False, horizon=None, api_base=None, api_key=None, history_size=10):
+    def __init__(
+        self,
+        model_name="gpt-4o",
+        debug=False,
+        horizon=None,
+        api_base=None,
+        api_key=None,
+        history_size=10,
+        observability=None,
+        invoke_config=None,
+    ):
         self.model_name = model_name
         self.debug = debug
         self.horizon = horizon
         self.api_base = api_base
         self.api_key = api_key
         self.history_size = history_size
+        self.observability = observability
+        self.invoke_config = dict(invoke_config or {})
         self._history = []
         self._graph = None
         self._system_prompt = None
         super().__init__()
+
+    def _safe_emit(self, event_type, payload, step, agent_role):
+        if self.observability is None:
+            return
+        try:
+            self.observability.emit(
+                event_type,
+                payload,
+                step=step,
+                agent_role=agent_role,
+            )
+        except Exception as exc:
+            if self.debug:
+                print(f"  [LLMAgent] observability emit failed: {exc}")
 
     def _format_history(self):
         """Format history entries for display to LLM."""
@@ -128,6 +154,8 @@ class LLMAgent(Agent):
             debug=self.debug,
             api_base=self.api_base,
             api_key=self.api_key,
+            observability=self.observability,
+            role_name="llm_agent",
         )
 
     def action(self, state):
@@ -140,57 +168,84 @@ class LLMAgent(Agent):
             (action, action_info): action is one of Action.ALL_ACTIONS,
                 action_info is a dict with metadata
         """
-        # Serialize state to text
-        state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
+        if self.observability is not None:
+            try:
+                self.observability.start_role("llm_agent")
+            except Exception:
+                pass
 
-        # Update tool context
-        set_state(state, self.agent_index)
-
-        # Build history text
-        history_text = self._format_history()
-
-        # Construct prompt with history
-        if history_text:
-            prompt = f"{history_text}\n\nCurrent game state:\n{state_text}\n\nDecide your action."
-        else:
-            prompt = f"Current game state:\n{state_text}\n\nDecide your action."
-
-        # Run LangGraph agent
-        from langchain_core.messages import HumanMessage, SystemMessage
-
-        messages = [
-            SystemMessage(content=self._system_prompt),
-            HumanMessage(content=prompt),
-        ]
-
-        # Execute graph with error handling
         try:
-            result = self._graph.invoke({"messages": messages})
-            reasoning = self._extract_reasoning(result["messages"])
-        except Exception as e:
-            # Graph failed - log warning and use fallback
+            # Serialize state to text
+            state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
+
+            # Update tool context
+            set_state(state, self.agent_index)
+
+            # Build history text
+            history_text = self._format_history()
+
+            # Construct prompt with history
+            if history_text:
+                prompt = f"{history_text}\n\nCurrent game state:\n{state_text}\n\nDecide your action."
+            else:
+                prompt = f"Current game state:\n{state_text}\n\nDecide your action."
+
+            # Run LangGraph agent
+            from langchain_core.messages import HumanMessage, SystemMessage
+
+            messages = [
+                SystemMessage(content=self._system_prompt),
+                HumanMessage(content=prompt),
+            ]
+
+            # Execute graph with error handling
+            try:
+                invoke_config = {**self.invoke_config, "recursion_limit": 15}
+                try:
+                    result = self._graph.invoke({"messages": messages}, config=invoke_config)
+                except TypeError as e:
+                    if "config" in str(e) or "unexpected keyword argument" in str(e):
+                        result = self._graph.invoke({"messages": messages})
+                    else:
+                        raise
+                reasoning = self._extract_reasoning(result["messages"])
+            except Exception as e:
+                # Graph failed - log warning and use fallback
+                if self.debug:
+                    print(f"  [LLMAgent] Graph execution failed: {e}")
+                reasoning = "(graph execution failed)"
+                result = None
+
+            # Extract the action from the tool module
+            chosen = get_chosen_action()
+            if chosen is None:
+                # LLM didn't call an action tool — default to STAY
+                if self.debug:
+                    print(f"  [LLMAgent] No action tool called, defaulting to STAY")
+                chosen = Action.STAY
+
+            # Store in history
+            self._add_to_history(state.timestep, reasoning, chosen)
+
             if self.debug:
-                print(f"  [LLMAgent] Graph execution failed: {e}")
-            reasoning = "(graph execution failed)"
-            result = None
-
-        # Extract the action from the tool module
-        chosen = get_chosen_action()
-        if chosen is None:
-            # LLM didn't call an action tool — default to STAY
-            if self.debug:
-                print(f"  [LLMAgent] No action tool called, defaulting to STAY")
-            chosen = Action.STAY
-
-        # Store in history
-        self._add_to_history(state.timestep, reasoning, chosen)
-
-        if self.debug:
+                action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
+                print(f"  [Step {state.timestep}] Player {self.agent_index} -> {action_name}")
             action_name = Action.ACTION_TO_CHAR.get(chosen, str(chosen))
-            print(f"  [Step {state.timestep}] Player {self.agent_index} -> {action_name}")
+            self._safe_emit(
+                "action.commit",
+                {"action": action_name},
+                step=state.timestep,
+                agent_role="llm_agent",
+            )
 
-        action_probs = self.a_probs_from_action(chosen)
-        return chosen, {"action_probs": action_probs}
+            action_probs = self.a_probs_from_action(chosen)
+            return chosen, {"action_probs": action_probs}
+        finally:
+            if self.observability is not None:
+                try:
+                    self.observability.end_role()
+                except Exception:
+                    pass
 
     def reset(self):
         """Reset agent state between episodes."""
