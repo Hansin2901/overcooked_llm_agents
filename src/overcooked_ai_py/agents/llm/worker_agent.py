@@ -4,19 +4,30 @@ Receives tasks from a shared Planner. Produces one action per timestep.
 Cannot see other workers' tasks or communicate with them.
 """
 
+import json
 from typing import Optional
 
+from langchain_community.chat_models import ChatLiteLLM
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from overcooked_ai_py.agents.agent import Agent
-from overcooked_ai_py.agents.llm.graph_builder import build_react_graph
 from overcooked_ai_py.agents.llm.state_serializer import (
     build_worker_system_prompt,
     serialize_state,
 )
 from overcooked_ai_py.agents.llm.tool_state import ToolState
-from overcooked_ai_py.agents.llm.worker_tools import create_worker_tools
-from overcooked_ai_py.mdp.actions import Action
+from overcooked_ai_py.mdp.actions import Action, Direction
+
+
+# Action name to game action mapping
+_ACTION_MAP = {
+    "move_up": Direction.NORTH,
+    "move_down": Direction.SOUTH,
+    "move_left": Direction.WEST,
+    "move_right": Direction.EAST,
+    "interact": Action.INTERACT,
+    "wait": Action.STAY,
+}
 
 
 class WorkerAgent(Agent):
@@ -61,9 +72,32 @@ class WorkerAgent(Agent):
         self._history = []
 
         self._tool_state = ToolState()
-        self._graph = None
+        self._llm = None
         self._system_prompt = None
         super().__init__()
+
+    def _parse_worker_action(self, text: str):
+        """Parse strict JSON {"action":"..."} and return mapped action or None.
+
+        Args:
+            text: LLM response text containing JSON
+
+        Returns:
+            Action from _ACTION_MAP if valid, None otherwise
+        """
+        try:
+            data = json.loads(text.strip())
+            action_name = data.get("action")
+            if action_name in _ACTION_MAP:
+                return _ACTION_MAP[action_name]
+            else:
+                if self.debug:
+                    print(f"  [{self.worker_id}] Unknown action: {action_name}")
+                return None
+        except (json.JSONDecodeError, AttributeError, KeyError) as e:
+            if self.debug:
+                print(f"  [{self.worker_id}] JSON parse error: {e}")
+            return None
 
     def set_mdp(self, mdp):
         """Initialize worker with MDP and register with planner.
@@ -75,6 +109,7 @@ class WorkerAgent(Agent):
 
         # Initialize motion planner for this worker
         from overcooked_ai_py.planning.planners import MotionPlanner
+
         mp = MotionPlanner(mdp)
 
         # Initialize tool state
@@ -83,27 +118,41 @@ class WorkerAgent(Agent):
         # Register with planner
         self.planner.register_worker(self.worker_id, self._tool_state)
 
-        # Build worker graph
-        self._system_prompt = build_worker_system_prompt(
+        # Build worker system prompt with JSON output instructions
+        base_prompt = build_worker_system_prompt(
             mdp, self.agent_index, self.worker_id, self.horizon
         )
 
-        obs_tools, act_tools, act_names = create_worker_tools(self._tool_state)
+        # Add JSON output format instructions
+        json_instructions = """
 
-        self._graph = build_react_graph(
-            model_name=self.model_name,
-            system_prompt=self._system_prompt,
-            observation_tools=obs_tools,
-            action_tools=act_tools,
-            action_tool_names=act_names,
-            get_chosen_fn=lambda: self._tool_state.chosen_action,
-            debug=self.debug,
-            debug_prefix=f"[{self.worker_id}]",
-            api_base=self.api_base,
-            api_key=self.api_key,
-            observability=self.observability,
-            role_name=self.worker_id,
-        )
+You must respond with ONLY a JSON object in this exact format:
+{"action": "action_name"}
+
+Valid actions:
+- move_up: Move north (up)
+- move_down: Move south (down)
+- move_left: Move west (left)
+- move_right: Move east (right)
+- interact: Pick up/drop items, use counters/dispensers
+- wait: Stay in place
+
+Do NOT use tool calls. Output ONLY the JSON object."""
+
+        self._system_prompt = base_prompt + json_instructions
+
+        # Initialize LLM
+        llm_kwargs = {
+            "model": self.model_name,
+            "temperature": 0.2,
+            "timeout": 30.0,
+        }
+        if self.api_base:
+            llm_kwargs["api_base"] = self.api_base
+        if self.api_key:
+            llm_kwargs["api_key"] = self.api_key
+
+        self._llm = ChatLiteLLM(**llm_kwargs)
 
     def _safe_emit(self, event_type: str, payload: dict, step: int, agent_role: str):
         if self.observability is None:
@@ -182,30 +231,31 @@ class WorkerAgent(Agent):
             # Step 2: Read this worker's task
             task = self.planner.get_task(self.worker_id)
             task_text = (
-                task.description
-                if task
-                else "No task assigned. Wait for instructions."
+                task.description if task else "No task assigned. Wait for instructions."
             )
 
             # Step 3: Run worker LLM
-            state_text = serialize_state(self.mdp, state, self.agent_index, self.horizon)
+            state_text = serialize_state(
+                self.mdp, state, self.agent_index, self.horizon
+            )
             self._tool_state.set_state(state, self.agent_index)
 
             # Build history text
             history_text = self._format_history()
 
+            # Build prompt with basic context
             if history_text:
                 prompt = (
                     f"{history_text}\n\n"
                     f"Your current task: {task_text}\n\n"
                     f"Current game state:\n{state_text}\n\n"
-                    f"Choose one action to execute your task."
+                    f"Respond with your action in JSON format."
                 )
             else:
                 prompt = (
                     f"Your current task: {task_text}\n\n"
                     f"Current game state:\n{state_text}\n\n"
-                    f"Choose one action to execute your task."
+                    f"Respond with your action in JSON format."
                 )
 
             messages = [
@@ -213,37 +263,36 @@ class WorkerAgent(Agent):
                 HumanMessage(content=prompt),
             ]
 
-            # Invoke with recursion limit to prevent infinite observation tool loops
-            # Max 15 steps allows ~5 observation calls before forcing action choice
+            # ONE-SHOT LLM INVOCATION: Single call with JSON action output
             if self.debug:
-                print(f"  [{self.worker_id}] Invoking graph (step {state.timestep})...")
+                print(f"  [{self.worker_id}] Invoking LLM (step {state.timestep})...")
 
             try:
-                invoke_config = {**self.invoke_config, "recursion_limit": 15}
-                try:
-                    self._graph.invoke(
-                        {"messages": messages},
-                        config=invoke_config,
-                    )
-                except TypeError as e:
-                    # Unit tests may stub invoke(messages) without config support.
-                    if "config" in str(e) or "unexpected keyword argument" in str(e):
-                        self._graph.invoke({"messages": messages})
-                    else:
-                        raise
+                response = self._llm.invoke(messages)
                 if self.debug:
-                    print(f"  [{self.worker_id}] Graph completed")
+                    print(
+                        f"  [{self.worker_id}] LLM response: {str(response.content)[:100]}..."
+                    )
+
+                # Parse action from JSON response
+                # Handle both string and list content types
+                content = response.content
+                if isinstance(content, list):
+                    # If content is a list, join it into a string
+                    content = " ".join(str(c) for c in content)
+
+                chosen = self._parse_worker_action(str(content))
+                if chosen is None:
+                    if self.debug:
+                        print(
+                            f"  [{self.worker_id}] Failed to parse action, defaulting to STAY"
+                        )
+                    chosen = Action.STAY
+
             except Exception as e:
                 if self.debug:
-                    print(f"  [{self.worker_id}] Graph error: {e}")
+                    print(f"  [{self.worker_id}] LLM error: {e}")
                 # On error, default to STAY
-                self._tool_state.chosen_action = Action.STAY
-
-            # Step 4: Get action
-            chosen = self._tool_state.chosen_action
-            if chosen is None:
-                if self.debug:
-                    print(f"  [{self.worker_id}] No action chosen, defaulting to STAY")
                 chosen = Action.STAY
 
             # Record history
@@ -293,6 +342,6 @@ class WorkerAgent(Agent):
         """Reset worker state for a new episode."""
         super().reset()
         self._tool_state.reset()
-        self._graph = None
+        self._llm = None
         self._system_prompt = None
         self._history = []

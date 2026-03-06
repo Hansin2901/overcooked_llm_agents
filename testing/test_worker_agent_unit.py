@@ -22,10 +22,7 @@ class TestWorkerAgentUnit(unittest.TestCase):
 
         # Create a shared planner
         self.planner = Planner(
-            model_name="gpt-4o-mini",
-            replan_interval=5,
-            debug=False,
-            horizon=400
+            model_name="gpt-4o-mini", replan_interval=5, debug=False, horizon=400
         )
 
         # Create worker
@@ -34,7 +31,7 @@ class TestWorkerAgentUnit(unittest.TestCase):
             worker_id="worker_0",
             model_name="gpt-4o-mini",
             debug=False,
-            horizon=400
+            horizon=400,
         )
 
     def test_init(self):
@@ -47,7 +44,7 @@ class TestWorkerAgentUnit(unittest.TestCase):
 
         # Check internal state
         self.assertIsNotNone(self.worker._tool_state)
-        self.assertIsNone(self.worker._graph)
+        self.assertIsNone(self.worker._llm)
         self.assertIsNone(self.worker._system_prompt)
 
         # Check base Agent initialization
@@ -73,13 +70,17 @@ class TestWorkerAgentUnit(unittest.TestCase):
         self.assertEqual(self.worker._tool_state.mdp, self.mdp)
         self.assertIsNotNone(self.worker._tool_state.motion_planner)
 
-        # Check graph and system prompt
-        self.assertIsNotNone(self.worker._graph)
+        # Check llm and system prompt
+        self.assertIsNotNone(self.worker._llm)
         self.assertIsNotNone(self.worker._system_prompt)
         self.assertIn("worker_0", self.worker._system_prompt)
+        self.assertIn("JSON", self.worker._system_prompt)
 
     def test_action_with_mocked_llm(self):
-        """Test action() logic with mocked LLM graph."""
+        """Test action() logic with mocked LLM."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         # Set up worker
         self.worker.set_agent_index(0)
         self.worker.set_mdp(self.mdp)
@@ -88,33 +89,33 @@ class TestWorkerAgentUnit(unittest.TestCase):
         mp = MotionPlanner(self.mdp)
         self.planner.init(self.mdp, mp)
 
-        # Mock the graphs to avoid LLM calls
+        # Mock the planner graph
         self.planner._graph = Mock()
-        self.worker._graph = Mock()
-
-        # Mock the worker graph to set an action
-        def mock_worker_invoke(messages):
-            # Simulate choosing NORTH action
-            self.worker._tool_state.set_action(Direction.NORTH)
-
-        self.worker._graph.invoke = mock_worker_invoke
 
         # Reset environment
         self.env.reset()
         state = self.env.state
 
-        # Get action
-        action, info = self.worker.action(state)
+        # Mock LLM to return valid JSON
+        mock_response = AIMessage(content='{"action":"move_up"}')
+        with patch.object(self.worker, "_llm") as mock_llm:
+            mock_llm.invoke.return_value = mock_response
 
-        # Check action
-        self.assertEqual(action, Direction.NORTH)
-        self.assertIn("action_probs", info)
+            # Get action
+            action, info = self.worker.action(state)
 
-        # Check planner was called
-        self.planner._graph.invoke.assert_called_once()
+            # Check action
+            self.assertEqual(action, Direction.NORTH)
+            self.assertIn("action_probs", info)
+
+            # Check planner was called
+            self.planner._graph.invoke.assert_called_once()
 
     def test_action_defaults_to_stay(self):
-        """Test that action defaults to STAY when graph doesn't set action."""
+        """Test that action defaults to STAY when LLM returns invalid JSON."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         # Set up worker
         self.worker.set_agent_index(0)
         self.worker.set_mdp(self.mdp)
@@ -123,29 +124,29 @@ class TestWorkerAgentUnit(unittest.TestCase):
         mp = MotionPlanner(self.mdp)
         self.planner.init(self.mdp, mp)
 
-        # Mock the graphs
+        # Mock the planner graph
         self.planner._graph = Mock()
-        self.worker._graph = Mock()
-
-        # Mock worker graph to NOT set any action
-        def mock_worker_invoke(messages):
-            # Don't set any action
-            pass
-
-        self.worker._graph.invoke = mock_worker_invoke
 
         # Reset environment
         self.env.reset()
         state = self.env.state
 
-        # Get action
-        action, info = self.worker.action(state)
+        # Mock LLM to return invalid JSON
+        mock_response = AIMessage(content="not valid json")
+        with patch.object(self.worker, "_llm") as mock_llm:
+            mock_llm.invoke.return_value = mock_response
 
-        # Check defaults to STAY
-        self.assertEqual(action, Action.STAY)
+            # Get action
+            action, info = self.worker.action(state)
+
+            # Check defaults to STAY
+            self.assertEqual(action, Action.STAY)
 
     def test_task_increments(self):
         """Test that task steps_active increments."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         # Set up worker
         self.worker.set_agent_index(0)
         self.worker.set_mdp(self.mdp)
@@ -154,9 +155,8 @@ class TestWorkerAgentUnit(unittest.TestCase):
         mp = MotionPlanner(self.mdp)
         self.planner.init(self.mdp, mp)
 
-        # Mock graphs
+        # Mock planner graph
         self.planner._graph = Mock()
-        self.worker._graph = Mock()
 
         # Create and assign a task
         task = Task(
@@ -164,7 +164,7 @@ class TestWorkerAgentUnit(unittest.TestCase):
             worker_id="worker_0",
             created_at=0,
             completed=False,
-            steps_active=0
+            steps_active=0,
         )
         self.worker._tool_state.set_task(task)
 
@@ -175,22 +175,30 @@ class TestWorkerAgentUnit(unittest.TestCase):
         self.env.reset()
         state = self.env.state
 
-        # Get action
-        initial_steps = task.steps_active
-        self.worker.action(state)
+        # Mock LLM
+        mock_response = AIMessage(content='{"action":"wait"}')
+        with patch.object(self.worker, "_llm") as mock_llm:
+            mock_llm.invoke.return_value = mock_response
 
-        # Check steps incremented
-        self.assertEqual(task.steps_active, initial_steps + 1)
+            # Get action
+            initial_steps = task.steps_active
+            self.worker.action(state)
+
+            # Check steps incremented
+            self.assertEqual(task.steps_active, initial_steps + 1)
 
     def test_planner_called_once_per_timestep(self):
         """Test that planner is only triggered once per timestep."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         # Create two workers
         worker1 = WorkerAgent(
             planner=self.planner,
             worker_id="worker_1",
             model_name="gpt-4o-mini",
             debug=False,
-            horizon=400
+            horizon=400,
         )
 
         # Set up workers
@@ -203,26 +211,33 @@ class TestWorkerAgentUnit(unittest.TestCase):
         mp = MotionPlanner(self.mdp)
         self.planner.init(self.mdp, mp)
 
-        # Mock graphs
+        # Mock planner graph
         self.planner._graph = Mock()
-        self.worker._graph = Mock()
-        worker1._graph = Mock()
 
         # Reset environment
         self.env.reset()
         state = self.env.state
 
-        # First worker calls action
-        self.worker.action(state)
-        first_call_count = self.planner._graph.invoke.call_count
+        # Mock LLMs for both workers
+        mock_response = AIMessage(content='{"action":"wait"}')
+        with (
+            patch.object(self.worker, "_llm") as mock_llm0,
+            patch.object(worker1, "_llm") as mock_llm1,
+        ):
+            mock_llm0.invoke.return_value = mock_response
+            mock_llm1.invoke.return_value = mock_response
 
-        # Second worker calls action (same timestep)
-        worker1.action(state)
-        second_call_count = self.planner._graph.invoke.call_count
+            # First worker calls action
+            self.worker.action(state)
+            first_call_count = self.planner._graph.invoke.call_count
 
-        # Planner should only be called once
-        self.assertEqual(first_call_count, 1)
-        self.assertEqual(second_call_count, 1)
+            # Second worker calls action (same timestep)
+            worker1.action(state)
+            second_call_count = self.planner._graph.invoke.call_count
+
+            # Planner should only be called once
+            self.assertEqual(first_call_count, 1)
+            self.assertEqual(second_call_count, 1)
 
     def test_reset(self):
         """Test that reset() clears state."""
@@ -248,7 +263,7 @@ class TestWorkerAgentUnit(unittest.TestCase):
         # Check state cleared
         self.assertIsNone(self.worker.agent_index)
         self.assertIsNone(self.worker.mdp)
-        self.assertIsNone(self.worker._graph)
+        self.assertIsNone(self.worker._llm)
         self.assertIsNone(self.worker._system_prompt)
         self.assertIsNone(self.worker._tool_state.state)
         self.assertIsNone(self.worker._tool_state.current_task)
@@ -262,7 +277,7 @@ class TestWorkerAgentUnit(unittest.TestCase):
             debug=True,
             horizon=200,
             api_base="https://test.com",
-            api_key="key123"
+            api_key="key123",
         )
 
         self.assertEqual(worker.model_name, "openai/custom")
@@ -273,6 +288,9 @@ class TestWorkerAgentUnit(unittest.TestCase):
 
     def test_action_info_structure(self):
         """Test that action info has correct structure."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         # Set up worker
         self.worker.set_agent_index(0)
         self.worker.set_mdp(self.mdp)
@@ -281,35 +299,37 @@ class TestWorkerAgentUnit(unittest.TestCase):
         mp = MotionPlanner(self.mdp)
         self.planner.init(self.mdp, mp)
 
-        # Mock graphs
+        # Mock planner graph
         self.planner._graph = Mock()
-        self.worker._graph = Mock()
-
-        # Mock to set an action
-        def mock_invoke(messages):
-            self.worker._tool_state.set_action(Action.INTERACT)
-
-        self.worker._graph.invoke = mock_invoke
 
         # Get action
         self.env.reset()
         state = self.env.state
-        action, info = self.worker.action(state)
 
-        # Check info structure
-        self.assertIn("action_probs", info)
-        self.assertEqual(len(info["action_probs"]), Action.NUM_ACTIONS)
-        self.assertAlmostEqual(sum(info["action_probs"]), 1.0, places=4)
+        # Mock LLM
+        mock_response = AIMessage(content='{"action":"interact"}')
+        with patch.object(self.worker, "_llm") as mock_llm:
+            mock_llm.invoke.return_value = mock_response
+
+            action, info = self.worker.action(state)
+
+            # Check info structure
+            self.assertIn("action_probs", info)
+            self.assertEqual(len(info["action_probs"]), Action.NUM_ACTIONS)
+            self.assertAlmostEqual(sum(info["action_probs"]), 1.0, places=4)
 
     def test_debug_output(self):
         """Test that debug mode prints output."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         # Create debug worker
         debug_worker = WorkerAgent(
             planner=self.planner,
             worker_id="debug_test",
             model_name="gpt-4o-mini",
             debug=True,
-            horizon=400
+            horizon=400,
         )
 
         debug_worker.set_agent_index(0)
@@ -319,20 +339,27 @@ class TestWorkerAgentUnit(unittest.TestCase):
         mp = MotionPlanner(self.mdp)
         self.planner.init(self.mdp, mp)
 
-        # Mock graphs
+        # Mock planner graph
         self.planner._graph = Mock()
-        debug_worker._graph = Mock()
 
         # Get action (should print debug output)
         self.env.reset()
         state = self.env.state
 
-        # Just verify it doesn't crash with debug=True
-        action, info = debug_worker.action(state)
-        self.assertIn(action, Action.ALL_ACTIONS)
+        # Mock LLM
+        mock_response = AIMessage(content='{"action":"wait"}')
+        with patch.object(debug_worker, "_llm") as mock_llm:
+            mock_llm.invoke.return_value = mock_response
+
+            # Just verify it doesn't crash with debug=True
+            action, info = debug_worker.action(state)
+            self.assertIn(action, Action.ALL_ACTIONS)
 
     def test_worker_emits_action_commit(self):
         """Test worker emits action.commit event when selecting an action."""
+        from unittest.mock import patch, ANY
+        from langchain_core.messages import AIMessage
+
         sink = Mock()
         state = self.mdp.get_standard_start_state()
 
@@ -344,18 +371,88 @@ class TestWorkerAgentUnit(unittest.TestCase):
         self.planner.init(self.mdp, mp)
 
         self.planner._graph = Mock()
-        self.worker._graph = Mock()
-        self.worker._tool_state.set_action(Action.STAY)
 
-        self.worker.action(state)
-        sink.start_role.assert_called_once_with("worker_0")
-        sink.end_role.assert_called_once()
-        sink.emit.assert_any_call(
-            "action.commit",
-            unittest.mock.ANY,
-            step=state.timestep,
-            agent_role="worker_0",
-        )
+        # Mock LLM
+        mock_response = AIMessage(content='{"action":"wait"}')
+        with patch.object(self.worker, "_llm") as mock_llm:
+            mock_llm.invoke.return_value = mock_response
+
+            self.worker.action(state)
+            sink.start_role.assert_called_once_with("worker_0")
+            sink.end_role.assert_called_once()
+            sink.emit.assert_any_call(
+                "action.commit",
+                ANY,
+                step=state.timestep,
+                agent_role="worker_0",
+            )
+
+    def test_worker_one_shot_action_parsing(self):
+        """Test worker action path performs one-shot parse without requiring observation tool loop."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
+        # Set up worker
+        self.worker.set_agent_index(0)
+        self.worker.set_mdp(self.mdp)
+
+        # Initialize planner
+        mp = MotionPlanner(self.mdp)
+        self.planner.init(self.mdp, mp)
+
+        # Mock planner graph
+        self.planner._graph = Mock()
+
+        # Reset environment
+        self.env.reset()
+        state = self.env.state
+
+        # Mock one LLM response with valid JSON action
+        mock_response = AIMessage(content='{"action":"move_up"}')
+        with patch.object(self.worker, "_llm", create=True) as mock_llm:
+            mock_llm.invoke.return_value = mock_response
+
+            # Get action
+            action, info = self.worker.action(state)
+
+            # Check action was parsed correctly
+            self.assertEqual(action, Direction.NORTH)
+            self.assertIn("action_probs", info)
+
+            # Verify only one LLM call was made
+            self.assertEqual(mock_llm.invoke.call_count, 1)
+
+    def test_worker_invalid_one_shot_output_falls_back_to_stay(self):
+        """Test worker invalid one-shot output falls back safely to STAY."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
+        # Set up worker
+        self.worker.set_agent_index(0)
+        self.worker.set_mdp(self.mdp)
+
+        # Initialize planner
+        mp = MotionPlanner(self.mdp)
+        self.planner.init(self.mdp, mp)
+
+        # Mock planner graph
+        self.planner._graph = Mock()
+
+        # Reset environment
+        self.env.reset()
+        state = self.env.state
+
+        # Mock malformed JSON output
+        mock_response = AIMessage(content="invalid json{")
+        with patch.object(self.worker, "_llm", create=True) as mock_llm:
+            mock_llm.invoke.return_value = mock_response
+
+            # Get action
+            action, info = self.worker.action(state)
+
+            # Check defaults to STAY
+            self.assertEqual(action, Action.STAY)
+            self.assertIn("action_probs", info)
 
 
 class TestWorkerMemory(unittest.TestCase):
@@ -529,6 +626,9 @@ class TestWorkerMemory(unittest.TestCase):
 
     def test_action_records_history(self):
         """action() adds an entry to history."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         self.worker.set_agent_index(0)
         self.worker.set_mdp(self.mdp)
 
@@ -536,25 +636,27 @@ class TestWorkerMemory(unittest.TestCase):
         self.planner.init(self.mdp, mp)
 
         self.planner._graph = Mock()
-        self.worker._graph = Mock()
-
-        def mock_invoke(messages, **kwargs):
-            self.worker._tool_state.set_action(Direction.NORTH)
-
-        self.worker._graph.invoke = mock_invoke
 
         env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
         env.reset()
         state = env.state
 
-        self.worker.action(state)
-        self.assertEqual(len(self.worker._history), 1)
-        entry = self.worker._history[0]
-        self.assertEqual(entry["timestep"], state.timestep)
-        self.assertEqual(entry["action"], "↑")
+        # Mock LLM
+        mock_response = AIMessage(content='{"action":"move_up"}')
+        with patch.object(self.worker, "_llm") as mock_llm:
+            mock_llm.invoke.return_value = mock_response
+
+            self.worker.action(state)
+            self.assertEqual(len(self.worker._history), 1)
+            entry = self.worker._history[0]
+            self.assertEqual(entry["timestep"], state.timestep)
+            self.assertEqual(entry["action"], "↑")
 
     def test_action_injects_history_into_prompt(self):
-        """action() includes history text in the prompt sent to graph."""
+        """action() includes history text in the prompt sent to LLM."""
+        from unittest.mock import patch
+        from langchain_core.messages import AIMessage
+
         self.worker.set_agent_index(0)
         self.worker.set_mdp(self.mdp)
 
@@ -572,24 +674,26 @@ class TestWorkerMemory(unittest.TestCase):
             task_description="Pick up onion",
         )
 
-        captured_messages = {}
+        captured_messages = []
 
-        def mock_invoke(messages, **kwargs):
-            captured_messages["msgs"] = messages
-            self.worker._tool_state.set_action(Direction.NORTH)
-
-        self.worker._graph = Mock()
-        self.worker._graph.invoke = mock_invoke
+        def mock_invoke(messages):
+            captured_messages.append(messages)
+            return AIMessage(content='{"action":"move_up"}')
 
         env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
         env.reset()
         state = env.state
 
-        self.worker.action(state)
+        with patch.object(self.worker, "_llm") as mock_llm:
+            mock_llm.invoke = mock_invoke
 
-        # Check the HumanMessage contains history
-        human_msg = captured_messages["msgs"]["messages"][1]
-        self.assertIn("RECENT HISTORY:", human_msg.content)
+            self.worker.action(state)
+
+            # Check the HumanMessage contains history
+            self.assertEqual(len(captured_messages), 1)
+            messages = captured_messages[0]
+            human_msg = messages[1]
+            self.assertIn("RECENT HISTORY:", human_msg.content)
 
     def test_reset_clears_history(self):
         """reset() clears the history list."""
