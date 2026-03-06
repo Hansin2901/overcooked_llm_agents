@@ -358,5 +358,252 @@ class TestWorkerAgentUnit(unittest.TestCase):
         )
 
 
+class TestWorkerMemory(unittest.TestCase):
+    """Tests for WorkerAgent memory system."""
+
+    def setUp(self):
+        self.mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        self.planner = Planner(
+            model_name="gpt-4o-mini",
+            replan_interval=5,
+            debug=False,
+            horizon=400,
+        )
+        self.worker = WorkerAgent(
+            planner=self.planner,
+            worker_id="worker_0",
+            model_name="gpt-4o-mini",
+            debug=False,
+            horizon=400,
+        )
+
+    # --- Storage tests (for Task 2A) ---
+
+    def test_default_history_size(self):
+        """WorkerAgent defaults to history_size=5."""
+        self.assertEqual(self.worker.history_size, 5)
+        self.assertEqual(self.worker._history, [])
+
+    def test_custom_history_size(self):
+        """WorkerAgent accepts custom history_size."""
+        w = WorkerAgent(
+            planner=self.planner,
+            worker_id="w",
+            model_name="gpt-4o-mini",
+            history_size=3,
+        )
+        self.assertEqual(w.history_size, 3)
+
+    def test_add_to_history(self):
+        """_add_to_history stores entry with correct fields."""
+        self.worker._add_to_history(
+            timestep=5,
+            position=(2, 1),
+            action=Direction.NORTH,
+            held="onion",
+            task_description="Pick up onion",
+        )
+        self.assertEqual(len(self.worker._history), 1)
+        entry = self.worker._history[0]
+        self.assertEqual(entry["timestep"], 5)
+        self.assertEqual(entry["position"], (2, 1))
+        self.assertEqual(entry["action"], "↑")
+        self.assertEqual(entry["held"], "onion")
+        self.assertEqual(entry["task"], "Pick up onion")
+
+    def test_history_trimmed_to_size(self):
+        """History is trimmed when it exceeds history_size."""
+        self.worker.history_size = 3
+        for i in range(5):
+            self.worker._add_to_history(
+                timestep=i,
+                position=(0, 0),
+                action=Action.STAY,
+                held="nothing",
+                task_description="task",
+            )
+        self.assertEqual(len(self.worker._history), 3)
+        self.assertEqual(self.worker._history[0]["timestep"], 2)
+
+    def test_history_disabled_when_size_zero(self):
+        """No entries stored when history_size=0."""
+        self.worker.history_size = 0
+        self.worker._add_to_history(
+            timestep=0,
+            position=(0, 0),
+            action=Action.STAY,
+            held="nothing",
+            task_description="t",
+        )
+        self.assertEqual(len(self.worker._history), 0)
+
+    # --- Formatting tests (for Task 2A) ---
+
+    def test_format_history_empty(self):
+        """Empty history returns empty string."""
+        self.assertEqual(self.worker._format_history(), "")
+
+    def test_format_history_single_entry(self):
+        """Single entry formats correctly."""
+        self.worker._add_to_history(
+            timestep=5,
+            position=(2, 1),
+            action=Direction.NORTH,
+            held="nothing",
+            task_description="Pick up onion",
+        )
+        result = self.worker._format_history()
+        self.assertIn("RECENT HISTORY:", result)
+        self.assertIn("Step 5", result)
+        self.assertIn("(2, 1)", result)
+        self.assertIn("Pick up onion", result)
+
+    def test_format_history_with_held_item(self):
+        """Entry with held item includes it."""
+        self.worker._add_to_history(
+            timestep=5,
+            position=(2, 1),
+            action=Direction.NORTH,
+            held="onion",
+            task_description="Deliver to pot",
+        )
+        result = self.worker._format_history()
+        self.assertIn("holding onion", result)
+
+    def test_format_history_no_held_item_omitted(self):
+        """Entry with 'nothing' held does not say 'holding nothing'."""
+        self.worker._add_to_history(
+            timestep=5,
+            position=(2, 1),
+            action=Direction.NORTH,
+            held="nothing",
+            task_description="Pick up onion",
+        )
+        result = self.worker._format_history()
+        self.assertNotIn("holding", result)
+
+    def test_format_history_task_boundary(self):
+        """Task change inserts boundary marker."""
+        self.worker._add_to_history(
+            timestep=5,
+            position=(2, 1),
+            action=Direction.NORTH,
+            held="nothing",
+            task_description="Pick up onion",
+        )
+        self.worker._add_to_history(
+            timestep=6,
+            position=(2, 0),
+            action=Action.INTERACT,
+            held="onion",
+            task_description="Deliver to pot",
+        )
+        result = self.worker._format_history()
+        self.assertIn("--- New task ---", result)
+
+    def test_format_history_same_task_no_boundary(self):
+        """Same task across entries has no boundary marker."""
+        self.worker._add_to_history(
+            timestep=5,
+            position=(2, 1),
+            action=Direction.NORTH,
+            held="nothing",
+            task_description="Pick up onion",
+        )
+        self.worker._add_to_history(
+            timestep=6,
+            position=(2, 0),
+            action=Action.INTERACT,
+            held="nothing",
+            task_description="Pick up onion",
+        )
+        result = self.worker._format_history()
+        self.assertNotIn("--- New task ---", result)
+
+    def test_format_history_disabled(self):
+        """history_size=0 returns empty string."""
+        self.worker.history_size = 0
+        self.assertEqual(self.worker._format_history(), "")
+
+    # --- Integration tests (for Task 2B) ---
+
+    def test_action_records_history(self):
+        """action() adds an entry to history."""
+        self.worker.set_agent_index(0)
+        self.worker.set_mdp(self.mdp)
+
+        mp = MotionPlanner(self.mdp)
+        self.planner.init(self.mdp, mp)
+
+        self.planner._graph = Mock()
+        self.worker._graph = Mock()
+
+        def mock_invoke(messages, **kwargs):
+            self.worker._tool_state.set_action(Direction.NORTH)
+
+        self.worker._graph.invoke = mock_invoke
+
+        env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
+        env.reset()
+        state = env.state
+
+        self.worker.action(state)
+        self.assertEqual(len(self.worker._history), 1)
+        entry = self.worker._history[0]
+        self.assertEqual(entry["timestep"], state.timestep)
+        self.assertEqual(entry["action"], "↑")
+
+    def test_action_injects_history_into_prompt(self):
+        """action() includes history text in the prompt sent to graph."""
+        self.worker.set_agent_index(0)
+        self.worker.set_mdp(self.mdp)
+
+        mp = MotionPlanner(self.mdp)
+        self.planner.init(self.mdp, mp)
+
+        self.planner._graph = Mock()
+
+        # Seed history
+        self.worker._add_to_history(
+            timestep=0,
+            position=(1, 1),
+            action=Direction.NORTH,
+            held="nothing",
+            task_description="Pick up onion",
+        )
+
+        captured_messages = {}
+
+        def mock_invoke(messages, **kwargs):
+            captured_messages["msgs"] = messages
+            self.worker._tool_state.set_action(Direction.NORTH)
+
+        self.worker._graph = Mock()
+        self.worker._graph.invoke = mock_invoke
+
+        env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
+        env.reset()
+        state = env.state
+
+        self.worker.action(state)
+
+        # Check the HumanMessage contains history
+        human_msg = captured_messages["msgs"]["messages"][1]
+        self.assertIn("RECENT HISTORY:", human_msg.content)
+
+    def test_reset_clears_history(self):
+        """reset() clears the history list."""
+        self.worker._add_to_history(
+            timestep=0,
+            position=(0, 0),
+            action=Action.STAY,
+            held="nothing",
+            task_description="t",
+        )
+        self.assertEqual(len(self.worker._history), 1)
+        self.worker.reset()
+        self.assertEqual(len(self.worker._history), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
