@@ -38,18 +38,18 @@ def main():
     import os
 
     parser = argparse.ArgumentParser(description="Run LLM agent on Overcooked")
-    parser.add_argument("--model", default=None, help="LiteLLM model name (default: from LLM_MODEL env or gpt-4o)")
-    parser.add_argument("--layout", default="cramped_room", help="Layout name (default: cramped_room)")
-    parser.add_argument("--horizon", type=int, default=200, help="Episode length (default: 200)")
-    parser.add_argument("--debug", action="store_true", help="Print LLM reasoning each step")
-    parser.add_argument("--visualize", action="store_true", help="Show real-time pygame visualization")
-    parser.add_argument("--fps", type=int, default=2, help="Frames per second for visualization (default: 2)")
-    parser.add_argument("--agent-type", choices=["llm", "planner-worker"], default="llm", help="Agent architecture: llm (LLMAgent+partner) or planner-worker (Planner+2Workers)")
-    parser.add_argument("--replan-interval", type=int, default=5, help="Steps between replanning for planner-worker mode (default: 5)")
+    parser.add_argument("--model", default=os.getenv("LLM_MODEL", "gpt-4o"), help="LiteLLM model name (default: from LLM_MODEL env or gpt-4o)")
+    parser.add_argument("--layout", default=os.getenv("LAYOUT", "cramped_room"), help="Layout name (default: from LAYOUT env or cramped_room)")
+    parser.add_argument("--horizon", type=int, default=os.getenv("HORIZON", 200), help="Episode length (default: from HORIZON env or 200)")
+    parser.add_argument("--debug", action="store_true", default=os.getenv("DEBUG", "false").lower() == "true", help="Print LLM reasoning each step (default: from DEBUG env or false)")
+    parser.add_argument("--visualize", action="store_true", default=os.getenv("VISUALIZE", "false").lower() == "true", help="Show real-time pygame visualization (default: from VISUALIZE env or false)")
+    parser.add_argument("--fps", type=int, default=os.getenv("FPS", 2), help="Frames per second for visualization (default: from FPS env or 2)")
+    parser.add_argument("--agent-type", choices=["llm", "planner-worker"], default=os.getenv("AGENT_TYPE", "llm"), help="Agent architecture: llm (LLMAgent+partner) or planner-worker (Planner+2Workers) (default: from AGENT_TYPE env or llm)")
+    parser.add_argument("--replan-interval", type=int, default=os.getenv("REPLAN_INTERVAL", 5), help="Steps between replanning for planner-worker mode (default: from REPLAN_INTERVAL env or 5)")
     args = parser.parse_args()
 
     # Read model, API base, and API key from environment if not provided as arguments
-    model = args.model or os.getenv("LLM_MODEL") or "gpt-4o"
+    model = args.model
     api_base = os.getenv("LLM_API_BASE")
     api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
 
