@@ -39,16 +39,28 @@ def create_planner_tools(
         player = planner_tool_state.state.players[planner_tool_state.agent_index]
         pos = player.position
         lines = []
-        for d, name in [(Direction.NORTH, "up"), (Direction.SOUTH, "down"),
-                         (Direction.EAST, "right"), (Direction.WEST, "left")]:
+        for d, name in [
+            (Direction.NORTH, "up"),
+            (Direction.SOUTH, "down"),
+            (Direction.EAST, "right"),
+            (Direction.WEST, "left"),
+        ]:
             adj = Action.move_in_direction(pos, d)
             x, y = adj
-            if 0 <= x < planner_tool_state.mdp.width and 0 <= y < planner_tool_state.mdp.height:
+            if (
+                0 <= x < planner_tool_state.mdp.width
+                and 0 <= y < planner_tool_state.mdp.height
+            ):
                 terrain = planner_tool_state.mdp.terrain_mtx[y][x]
                 terrain_name = {
-                    " ": "floor", "X": "counter", "P": "pot",
-                    "O": "onion_dispenser", "T": "tomato_dispenser",
-                    "D": "dish_dispenser", "S": "serving_location", "#": "wall",
+                    " ": "floor",
+                    "X": "counter",
+                    "P": "pot",
+                    "O": "onion_dispenser",
+                    "T": "tomato_dispenser",
+                    "D": "dish_dispenser",
+                    "S": "serving_location",
+                    "#": "wall",
                 }.get(terrain, terrain)
 
                 # Check for objects
@@ -61,7 +73,10 @@ def create_planner_tools(
                         elif obj.is_cooking:
                             obj_desc = f" [cooking, {obj.cook_time - obj._cooking_tick} ticks left]"
                         else:
-                            if len(obj.ingredients) >= 3 and not planner_tool_state.mdp.old_dynamics:
+                            if (
+                                len(obj.ingredients) >= 3
+                                and not planner_tool_state.mdp.old_dynamics
+                            ):
                                 obj_desc = " [FULL 3/3, NOT COOKING - INTERACT with empty hands to start]"
                             else:
                                 obj_desc = f" [{len(obj.ingredients)}/3 ingredients]"
@@ -69,7 +84,9 @@ def create_planner_tools(
                         obj_desc = f" [{obj.name}]"
 
                 # Check for other player
-                partner = planner_tool_state.state.players[1 - planner_tool_state.agent_index]
+                partner = planner_tool_state.state.players[
+                    1 - planner_tool_state.agent_index
+                ]
                 player_desc = " [PARTNER HERE]" if adj == partner.position else ""
 
                 lines.append(f"  {name}: {terrain_name}{obj_desc}{player_desc}")
@@ -90,18 +107,27 @@ def create_planner_tools(
                 soup = planner_tool_state.state.get_object(pot_pos)
                 ingredients = soup.ingredients
                 if soup.is_ready:
-                    lines.append(f"Pot at {pot_pos}: READY! Ingredients: {', '.join(ingredients)}. Pick up a dish, face this pot, and interact to collect soup.")
+                    lines.append(
+                        f"Pot at {pot_pos}: READY! Ingredients: {', '.join(ingredients)}. Pick up a dish, face this pot, and interact to collect soup."
+                    )
                 elif soup.is_cooking:
                     remaining = soup.cook_time - soup._cooking_tick
-                    lines.append(f"Pot at {pot_pos}: COOKING, {remaining} ticks remaining. Ingredients: {', '.join(ingredients)}.")
+                    lines.append(
+                        f"Pot at {pot_pos}: COOKING, {remaining} ticks remaining. Ingredients: {', '.join(ingredients)}."
+                    )
                 else:
-                    if len(ingredients) >= 3 and not planner_tool_state.mdp.old_dynamics:
+                    if (
+                        len(ingredients) >= 3
+                        and not planner_tool_state.mdp.old_dynamics
+                    ):
                         lines.append(
                             f"Pot at {pot_pos}: FULL (3/3) but NOT COOKING ({', '.join(ingredients)}). "
                             f"A worker with empty hands must INTERACT to start cooking."
                         )
                     else:
-                        lines.append(f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients ({', '.join(ingredients)}). Needs {3 - len(ingredients)} more.")
+                        lines.append(
+                            f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients ({', '.join(ingredients)}). Needs {3 - len(ingredients)} more."
+                        )
         if not lines:
             return "No pots found."
         return "\n".join(lines)
@@ -127,7 +153,9 @@ def create_planner_tools(
 
         if target == "dish":
             # Find dishes on counters
-            counter_objects = planner_tool_state.mdp.get_counter_objects_dict(planner_tool_state.state)
+            counter_objects = planner_tool_state.mdp.get_counter_objects_dict(
+                planner_tool_state.state
+            )
             positions = counter_objects.get("dish", [])
             if not positions:
                 return "No dishes found on counters."
@@ -142,12 +170,21 @@ def create_planner_tools(
         min_cost = np.inf
         best_pos = None
         for feature_pos in positions:
-            if feature_pos not in planner_tool_state.motion_planner.motion_goals_for_pos:
+            if (
+                feature_pos
+                not in planner_tool_state.motion_planner.motion_goals_for_pos
+            ):
                 continue
-            for goal in planner_tool_state.motion_planner.motion_goals_for_pos[feature_pos]:
-                if not planner_tool_state.motion_planner.is_valid_motion_start_goal_pair(start, goal):
+            for goal in planner_tool_state.motion_planner.motion_goals_for_pos[
+                feature_pos
+            ]:
+                if not planner_tool_state.motion_planner.is_valid_motion_start_goal_pair(
+                    start, goal
+                ):
                     continue
-                cost = planner_tool_state.motion_planner.get_gridworld_distance(start, goal)
+                cost = planner_tool_state.motion_planner.get_gridworld_distance(
+                    start, goal
+                )
                 if cost < min_cost:
                     min_cost = cost
                     best_pos = feature_pos
@@ -241,7 +278,9 @@ def create_planner_tools(
                     )
             elif terrain_name == "counter" and worker_state.state.has_object(adj_pos):
                 obj = worker_state.state.get_object(adj_pos)
-                interactables.append(f"{terrain_name} with {obj.name} ({direction_name})")
+                interactables.append(
+                    f"{terrain_name} with {obj.name} ({direction_name})"
+                )
             else:
                 interactables.append(f"{terrain_name} ({direction_name})")
 
@@ -272,7 +311,9 @@ def create_planner_tools(
         task_lower = task_description.lower()
 
         # Check: trying to pick up when already holding something
-        if any(keyword in task_lower for keyword in ["pick up", "pickup", "grab", "get"]):
+        if any(
+            keyword in task_lower for keyword in ["pick up", "pickup", "grab", "get"]
+        ):
             if player.held_object is not None:
                 held_name = player.held_object.name
                 return f"INFEASIBLE: Worker {worker_id} is already holding {held_name}, cannot pick up another item. Suggest: deliver or drop current item first."
@@ -346,7 +387,9 @@ def create_planner_tools(
                 errors.append(f"Unknown worker_id '{worker_id}'")
                 continue
             if not isinstance(description, str):
-                errors.append(f"Task for '{worker_id}' must be a string, got {type(description).__name__}")
+                errors.append(
+                    f"Task for '{worker_id}' must be a string, got {type(description).__name__}"
+                )
                 continue
 
             timestep = 0
@@ -372,14 +415,7 @@ def create_planner_tools(
     # Collect and return
     # -------------------------------------------------------------------
 
-    observation_tools = [
-        get_surroundings,
-        get_pot_details,
-        check_path,
-        get_worker_status,
-        get_nearby_interactables,
-        validate_task_feasibility,
-    ]
+    observation_tools = []
     action_tools = [assign_tasks]
     action_tool_names = {"assign_tasks"}
     return observation_tools, action_tools, action_tool_names

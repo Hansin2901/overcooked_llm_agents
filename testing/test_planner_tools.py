@@ -6,11 +6,17 @@ import unittest
 from overcooked_ai_py.agents.llm.planner_tools import create_planner_tools
 from overcooked_ai_py.agents.llm.task import Task
 from overcooked_ai_py.agents.llm.tool_state import ToolState
-from overcooked_ai_py.mdp.overcooked_mdp import Direction, ObjectState, OvercookedGridworld
+from overcooked_ai_py.mdp.overcooked_mdp import (
+    Direction,
+    ObjectState,
+    OvercookedGridworld,
+)
 from overcooked_ai_py.planning.planners import MotionPlanner
 
 
-def create_mock_state(mdp, workers: list = None, pots: list = None, objects: dict = None):
+def create_mock_state(
+    mdp, workers: list = None, pots: list = None, objects: dict = None
+):
     """Helper to create mock game states for testing."""
     from overcooked_ai_py.mdp.overcooked_mdp import PlayerState, SoupState
 
@@ -87,8 +93,8 @@ class TestPlannerTools(unittest.TestCase):
         self.worker_1_state.set_state(self.state, 1)
 
         # Create tools
-        self.obs_tools, self.action_tools, self.action_tool_names = create_planner_tools(
-            self.planner_tool_state, self.worker_registry
+        self.obs_tools, self.action_tools, self.action_tool_names = (
+            create_planner_tools(self.planner_tool_state, self.worker_registry)
         )
 
     def test_factory_creates_correct_tools(self):
@@ -124,10 +130,12 @@ class TestPlannerTools(unittest.TestCase):
         assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
 
         # Create valid assignments
-        assignments = json.dumps({
-            "worker_0": "Pick up onion from dispenser",
-            "worker_1": "Get a dish from dispenser"
-        })
+        assignments = json.dumps(
+            {
+                "worker_0": "Pick up onion from dispenser",
+                "worker_1": "Get a dish from dispenser",
+            }
+        )
 
         # Call the tool
         result = assign_tasks.invoke({"assignments": assignments})
@@ -171,10 +179,9 @@ class TestPlannerTools(unittest.TestCase):
         assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
 
         # Create assignments with unknown worker
-        assignments = json.dumps({
-            "worker_0": "Pick up onion",
-            "worker_999": "Unknown worker task"
-        })
+        assignments = json.dumps(
+            {"worker_0": "Pick up onion", "worker_999": "Unknown worker task"}
+        )
 
         result = assign_tasks.invoke({"assignments": assignments})
 
@@ -203,9 +210,11 @@ class TestPlannerTools(unittest.TestCase):
         assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
 
         # Task description is not a string
-        assignments = json.dumps({
-            "worker_0": 123  # number instead of string
-        })
+        assignments = json.dumps(
+            {
+                "worker_0": 123  # number instead of string
+            }
+        )
 
         result = assign_tasks.invoke({"assignments": assignments})
 
@@ -215,7 +224,9 @@ class TestPlannerTools(unittest.TestCase):
     def test_get_worker_status_idle(self):
         """Test get_worker_status returns correct status for idle worker."""
         # Find the get_worker_status tool
-        get_worker_status = next(t for t in self.obs_tools if t.name == "get_worker_status")
+        get_worker_status = next(
+            t for t in self.obs_tools if t.name == "get_worker_status"
+        )
 
         # Worker should be idle initially
         result = get_worker_status.invoke({"worker_id": "worker_0"})
@@ -233,12 +244,14 @@ class TestPlannerTools(unittest.TestCase):
             worker_id="worker_0",
             created_at=0,
             completed=False,
-            steps_active=5
+            steps_active=5,
         )
         self.worker_0_state.set_task(task)
 
         # Get status
-        get_worker_status = next(t for t in self.obs_tools if t.name == "get_worker_status")
+        get_worker_status = next(
+            t for t in self.obs_tools if t.name == "get_worker_status"
+        )
         result = get_worker_status.invoke({"worker_id": "worker_0"})
 
         # Parse response
@@ -255,12 +268,14 @@ class TestPlannerTools(unittest.TestCase):
             worker_id="worker_0",
             created_at=0,
             completed=True,
-            steps_active=10
+            steps_active=10,
         )
         self.worker_0_state.set_task(task)
 
         # Get status
-        get_worker_status = next(t for t in self.obs_tools if t.name == "get_worker_status")
+        get_worker_status = next(
+            t for t in self.obs_tools if t.name == "get_worker_status"
+        )
         result = get_worker_status.invoke({"worker_id": "worker_0"})
 
         # Parse response
@@ -271,7 +286,9 @@ class TestPlannerTools(unittest.TestCase):
 
     def test_get_worker_status_unknown_worker(self):
         """Test get_worker_status with unknown worker_id returns error."""
-        get_worker_status = next(t for t in self.obs_tools if t.name == "get_worker_status")
+        get_worker_status = next(
+            t for t in self.obs_tools if t.name == "get_worker_status"
+        )
 
         result = get_worker_status.invoke({"worker_id": "worker_999"})
 
@@ -283,7 +300,9 @@ class TestPlannerTools(unittest.TestCase):
     def test_observation_tools_work(self):
         """Test that observation tools (get_surroundings, get_pot_details, check_path) work."""
         # Test get_surroundings
-        get_surroundings = next(t for t in self.obs_tools if t.name == "get_surroundings")
+        get_surroundings = next(
+            t for t in self.obs_tools if t.name == "get_surroundings"
+        )
         result = get_surroundings.invoke({})
         self.assertIsInstance(result, str)
         self.assertIn("up:", result)
@@ -351,7 +370,6 @@ class TestPlannerTools(unittest.TestCase):
             ["worker_0", "position (1, 1)", "holding", "onion"],
         )
 
-
     def test_get_nearby_interactables_with_adjacent_objects(self):
         """Test get_nearby_interactables returns objects within distance 1."""
         # Set up: place worker_0 at (1, 1) in cramped_room layout
@@ -402,14 +420,25 @@ class TestPlannerTools(unittest.TestCase):
         validate = next(
             t for t in self.obs_tools if t.name == "validate_task_feasibility"
         )
-        result = validate.invoke({
-            "worker_id": "worker_0",
-            "task_description": "Pick up a dish from dish dispenser"
-        })
+        result = validate.invoke(
+            {
+                "worker_id": "worker_0",
+                "task_description": "Pick up a dish from dish dispenser",
+            }
+        )
 
         # Should indicate infeasible
         self.assertIn("INFEASIBLE", result)
         self.assertIn("already holding", result.lower())
+
+    def test_factory_creates_assignment_only_planner_tools(self):
+        """Test that planner observation tool list is empty and only assign_tasks remains."""
+        obs_tools, action_tools, action_tool_names = create_planner_tools(
+            self.planner_tool_state, self.worker_registry
+        )
+        self.assertEqual(obs_tools, [])
+        self.assertEqual({t.name for t in action_tools}, {"assign_tasks"})
+        self.assertEqual(action_tool_names, {"assign_tasks"})
 
 
 if __name__ == "__main__":
