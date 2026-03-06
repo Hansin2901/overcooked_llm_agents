@@ -1,0 +1,8 @@
+layout_name: asymmetric_advantages
+model_name: openai/mistral.mistral-large-3-675b-instruct
+horizon: 100
+debug: false
+visualize: true
+fps: 10
+agent_type: llm
+replan_interval: 10
