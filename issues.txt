@@ -1,0 +1,8 @@
+2026-02-27 - Planner/Worker Pathfinding Deadlocks
+
+- Issue: Pathfinding guidance (especially via `check_path`) is sometimes not working as expected and can lead workers into repeated blocking/deadlock behavior.
+- Impact: Agents can stall, oscillate, or repeatedly choose ineffective moves in bottleneck layouts (for example, around pot approach lanes).
+- Future TODO:
+  - Option A: Improve pathfinding tooling/heuristics so paths account for dynamic blocking and deadlock avoidance.
+  - Option B: Remove or de-emphasize the `check_path` tool if it causes more harm than value for LLM decisions.
+  - Option C: Add explicit anti-deadlock fallback behavior (reroute/step-aside/wait policy) when movement fails repeatedly.

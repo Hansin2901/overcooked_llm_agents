@@ -22,6 +22,11 @@ DIRECTION_NAMES = {
 }
 
 
+def _uses_old_dynamics(mdp) -> bool:
+    """Return whether this layout uses old auto-start cooking dynamics."""
+    return bool(getattr(mdp, "old_dynamics", False))
+
+
 def serialize_state(mdp, state, agent_index, horizon=None):
     """Convert an OvercookedState to a text description for the LLM.
 
@@ -82,8 +87,10 @@ def _serialize_grid(mdp, state, agent_index):
                 row += mdp.terrain_mtx[y][x]
         lines.append(f"  {row}")
 
-    lines.append("Legend: Y=you, @=partner, X=counter, O=onion_disp, T=tomato_disp, "
-                 "P=pot, S=serving, D=dish_disp, #=wall, ' '=floor")
+    lines.append(
+        "Legend: Y=you, @=partner, X=counter, O=onion_disp, T=tomato_disp, "
+        "P=pot, S=serving, D=dish_disp, #=wall, ' '=floor"
+    )
     return "\n".join(lines)
 
 
@@ -99,7 +106,9 @@ def _serialize_players(state, agent_index):
 
     p_facing = DIRECTION_NAMES.get(partner.orientation, str(partner.orientation))
     p_held = _describe_held(partner)
-    lines.append(f"PARTNER: pos={partner.position}, facing={p_facing}, holding={p_held}")
+    lines.append(
+        f"PARTNER: pos={partner.position}, facing={p_facing}, holding={p_held}"
+    )
 
     return "\n".join(lines)
 
@@ -131,12 +140,24 @@ def _serialize_pots(mdp, state):
             soup = state.get_object(pot_pos)
             ingredients = soup.ingredients
             if soup.is_ready:
-                lines.append(f"  Pot at {pot_pos}: READY to serve ({', '.join(ingredients)})")
+                lines.append(
+                    f"  Pot at {pot_pos}: READY to serve ({', '.join(ingredients)})"
+                )
             elif soup.is_cooking:
                 remaining = soup.cook_time - soup._cooking_tick
-                lines.append(f"  Pot at {pot_pos}: cooking {remaining} ticks left ({', '.join(ingredients)})")
+                lines.append(
+                    f"  Pot at {pot_pos}: cooking {remaining} ticks left ({', '.join(ingredients)})"
+                )
             else:
-                lines.append(f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)})")
+                if len(ingredients) >= 3 and not _uses_old_dynamics(mdp):
+                    lines.append(
+                        f"  Pot at {pot_pos}: FULL (3/3) but NOT cooking ({', '.join(ingredients)}). "
+                        f"INTERACT with empty hands to start cooking."
+                    )
+                else:
+                    lines.append(
+                        f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)})"
+                    )
 
     return "\n".join(lines)
 
@@ -209,13 +230,332 @@ def build_system_prompt(mdp, agent_index, horizon=None):
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
 
-    return f"""You are an AI chef in Overcooked, a cooperative cooking game. You are Player {agent_index}.
+    if _uses_old_dynamics(mdp):
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> pot starts cooking automatically -> pick up a dish -> use dish on ready pot "
+            "to get soup -> deliver soup to serving location"
+        )
+        cook_rule = "When pot has 3 ingredients, it starts cooking automatically."
+    else:
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> INTERACT with the full pot (while holding nothing) to start cooking "
+            "-> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location"
+        )
+        cook_rule = (
+            "When pot has 3 ingredients it is FULL but idle; it will NOT cook until someone "
+            "INTERACTs with that pot while holding nothing."
+        )
+
+        return f"""You are a chef in Overcooked. ...
+
+GAME RULES:
+- Make soups by: {soup_pipeline}
+- CRITICAL: You can hold ONLY ONE ITEM at a time. Put something down before picking up anything else.
+- INTERACT action: picks up items, places items, starts cooking, serves soup. You must be FACING the target square.
+- To face a direction, move in that direction (even if blocked, your orientation updates).
+- Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+ADJACENCY & INTERACT RULES (FOLLOW THESE EXACTLY):
+- Compute Manhattan distance: |your_x - target_x| + |your_y - target_y|.
+- If distance == 1 (you are ADJACENT) AND you are facing the target:
+  → DO NOT MOVE AGAIN. Call INTERACT immediately.
+- If distance == 1 but you are NOT facing the target:
+  → Move ONCE to turn and face the target (even if blocked), then INTERACT.
+- If distance > 1:
+  → Move closer using the shortest path; ONLY once you become adjacent, switch to INTERACT.
+
+STUCK / NO-MOVE RULE:
+- If you choose a MOVE action and your position does NOT change on the next step:
+  → Assume you are blocked or already adjacent.
+  → On the very next step, either:
+    - Try INTERACT (if target is adjacent), OR
+    - Move in a different direction rather than repeating the same move.
+
+PARTNER AWARENESS:
+- If your partner is already adjacent to a pot or dispenser with the right item:
+  → Prefer complementary tasks (e.g., get dishes, start cooking, or serve), instead of duplicating their movement.
+
+...
+"""
+
+
+#     return f"""You are an AI chef in Overcooked, a cooperative cooking game. You are Player {agent_index}.
+
+# RULES:
+# - Make soups by: {soup_pipeline}
+# - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
+# - To face a direction, move in that direction (even if blocked, your orientation updates).
+# - You share the kitchen with a partner. Coordinate to avoid blocking each other.
+# - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+# LAYOUT:
+# {grid_str}
+# Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+
+# KEY LOCATIONS:
+# {locations_str}
+
+# STRATEGY TIPS:
+# - To pick up an onion: stand adjacent to an onion dispenser, face it, then INTERACT.
+# - To place in pot: stand adjacent to a pot, face it, then INTERACT.
+# - {cook_rule}
+# - NEVER try to collect soup unless the pot status says READY.
+# - When pot is ready: pick up a dish (from dish dispenser 'D' or a counter), stand adjacent to pot facing it, INTERACT to get soup.
+# - Deliver soup: carry soup to a serving location, face it, INTERACT.
+
+# Each turn you receive the current game state. You may use observation tools to gather info, then MUST call exactly one action tool to make your move."""
+
+
+def build_planner_system_prompt(mdp, worker_ids, horizon=None):
+    """Build the system prompt for the planner LLM.
+
+    The planner coordinates multiple workers by assigning them complementary tasks.
+    Workers cannot communicate with each other, so tasks must be self-contained.
+
+    Args:
+        mdp: OvercookedGridworld instance
+        worker_ids: list of worker identifiers (e.g., ["worker_0", "worker_1"])
+        horizon: total episode length
+
+    Returns:
+        str: system prompt for the planner
+    """
+    # Build terrain grid
+    grid_lines = []
+    for y in range(mdp.height):
+        row = ""
+        for x in range(mdp.width):
+            row += mdp.terrain_mtx[y][x]
+        grid_lines.append(row)
+    grid_str = "\n".join(grid_lines)
+
+    # Key locations
+    locations = []
+    for name, getter in [
+        ("Pots", mdp.get_pot_locations),
+        ("Onion dispensers", mdp.get_onion_dispenser_locations),
+        ("Tomato dispensers", mdp.get_tomato_dispenser_locations),
+        ("Dish dispensers", mdp.get_dish_dispenser_locations),
+        ("Serving locations", mdp.get_serving_locations),
+    ]:
+        locs = getter()
+        if locs:
+            locations.append(f"  {name}: {locs}")
+
+    locations_str = "\n".join(locations) if locations else "  (none listed)"
+
+    horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
+
+    # Format worker list
+    workers_str = "\n".join(f"  - {wid}" for wid in worker_ids)
+
+    if _uses_old_dynamics(mdp):
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> pot starts cooking automatically -> pick up a dish -> use dish on ready pot "
+            "to get soup -> deliver soup to serving location"
+        )
+        cook_rule = "When a pot reaches 3 ingredients, it starts cooking automatically."
+    else:
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> INTERACT with the full pot (while holding nothing) to start cooking "
+            "-> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location"
+        )
+        cook_rule = (
+            "A pot with 3/3 ingredients is NOT ready soup and does NOT cook by itself; "
+            "assign a worker to start cooking via INTERACT."
+        )
+    return f"""You are the PLANNER in the cooperative cooking game Overcooked. Coordinate multiple workers to make and deliver soups as efficiently as possible.
+Workers CANNOT communicate directly and must execute their tasks independently.
+
+1. Core Principles
+Your planning must always be guided by these three principles:
+- Maximize Efficiency: Minimize the total time required to complete all orders. This is the most critical goal.
+- Maximize Parallelism: Ensure multiple agents are working simultaneously whenever possible to reduce idle time.
+- Ensure Accuracy: Adhere 100% to all action definitions, rules, and constraints outlined below.
 
 RULES:
-- Make soups by: pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) -> pot cooks automatically -> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location
+- Each worker holds ONE item at a time.
+- INTERACT picks up or drops items; must face the target square.
+- Coordinates: (x,y), x increases right, y increases downward.
+- Do not collect soup from a pot unless it is READY.
+- {cook_rule}{horizon_str}
+
+LAYOUT:
+{grid_str}
+Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+
+KEY LOCATIONS:
+{locations_str}
+
+WORKERS:
+{workers_str}
+
+ROLE ASSIGNMENT:
+- Worker 0 → Primary ingredient gatherer and pot filler.
+- Worker 1 → Plate prep, delivery, and support for pot or ingredients.
+- Roles remain consistent until tasks are completed or the environment changes.
+
+TASK GUIDELINES:
+- Assign atomic tasks with explicit coordinates: e.g., "Go to onion dispenser at (2,1), pick onion, deliver to pot at (3,2)".
+- Plan multi-step paths to targets, considering counters, obstacles, and the other worker's position.
+- Reassign tasks dynamically if items, pots, or paths change.
+- Pipeline tasks: prepare next soup while current soup cooks.
+- Avoid idle time, overlapping paths, and collisions.
+
+STRATEGY:
+- Divide responsibilities across workers so each has a complementary objective.
+- Maintain coordination by assigning non-overlapping paths and synchronized handoffs.
+
+TASK ASSIGNMENT GUIDELINES:
+1. Assign ONE clear objective per worker (avoid vague multi-goal instructions).
+2. Use the full context provided in the game state (worker positions, inventory, pot contents).
+3. Break complex plans into atomic tasks with explicit objects/locations.
+4. Ensure tasks are feasible given worker constraints (can only hold one item, must be adjacent to interact).
+5. Assign tasks immediately using the assign_tasks tool - no observation phase needed.
+
+STATE-GROUNDED PLANNING CONSTRAINTS:
+- Plan based ONLY on current observed state - Do not assume a worker will complete their task.
+- Re-evaluate worker positions and inventory every replan cycle.
+- Assign both workers every replan, even if their previous task is not complete.
+- Workers may get blocked, distracted, or take longer than expected - always check the actual state.
+
+ASSIGNMENT WORKFLOW:
+- You receive complete state context including worker positions, inventory, and pot status.
+- Analyze the state and plan complementary tasks for both workers.
+- Call assign_tasks ONCE with task descriptions for both workers.
+- Tasks should be specific, actionable, and coordinated to avoid conflicts.
+
+PRIORITY RULES:
+1. If a soup is ready first complete delivery before doing anything else.
+2. Keep pots cooking whenever possible.
+3. While soup is cooking, one worker gathers/preps ingredients, the other preps plates and serves.
+4. Minimize walking distance.
+5. Ensure each worker’s path is clear of obstacles and other workers.
+
+OUTPUT FORMAT:
+Respond ONLY with valid JSON:
+
+{{
+  "worker_0": "short task description",
+  "worker_1": "short task description"
+}}
+
+- You MUST assign tasks to ALL workers (worker_0 and worker_1) in every call to assign_tasks
+- Partial assignments are not allowed - always include both workers
+
+Do NOT include explanations, markdown, or text outside JSON.
+"""
+
+
+def get_planner_system_prompt(mdp, worker_ids, horizon=None):
+    """Backward-compatible alias for planner system prompt generation."""
+    return build_planner_system_prompt(mdp, worker_ids, horizon)
+
+
+def format_planner_prompt_with_history(mdp, state, current_step, history):
+    """Format planner human prompt with worker status, state, and recent assignments."""
+    if history is None:
+        history = []
+
+    state_text = serialize_state(mdp, state, agent_index=0)
+    lines = [f"Current game state:\n{state_text}\n"]
+
+    if history:
+        lines.append("Planning history (most recent first):")
+        for entry in reversed(history[-3:]):
+            step = entry.get("step")
+            assignments = entry.get("assignments", {})
+            lines.append(f"- Step {step}:")
+            if assignments:
+                for worker_id, task in sorted(assignments.items()):
+                    lines.append(f"  {worker_id}: {task}")
+            else:
+                lines.append("  (no assignments recorded)")
+        last_step = history[-1].get("step")
+        lines.append(
+            f"\nLast assignment step: {last_step}; current step is {current_step}."
+        )
+    else:
+        lines.append(f"No planning history yet. The current step is {current_step}.")
+
+    lines.append("\nAssign tasks to your workers.")
+    return "\n".join(lines)
+
+
+def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):
+    """Build the system prompt for a worker LLM.
+
+    Workers execute tasks assigned by the planner. They don't know about other workers.
+
+    Args:
+        mdp: OvercookedGridworld instance
+        agent_index: which player we are (0 or 1)
+        worker_id: identifier for this worker (e.g., "worker_0")
+        horizon: total episode length
+
+    Returns:
+        str: system prompt for the worker
+    """
+    # Build terrain grid
+    grid_lines = []
+    for y in range(mdp.height):
+        row = ""
+        for x in range(mdp.width):
+            row += mdp.terrain_mtx[y][x]
+        grid_lines.append(row)
+    grid_str = "\n".join(grid_lines)
+
+    # Key locations
+    locations = []
+    for name, getter in [
+        ("Pots", mdp.get_pot_locations),
+        ("Onion dispensers", mdp.get_onion_dispenser_locations),
+        ("Tomato dispensers", mdp.get_tomato_dispenser_locations),
+        ("Dish dispensers", mdp.get_dish_dispenser_locations),
+        ("Serving locations", mdp.get_serving_locations),
+    ]:
+        locs = getter()
+        if locs:
+            locations.append(f"  {name}: {locs}")
+
+    locations_str = "\n".join(locations) if locations else "  (none listed)"
+
+    horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
+
+    if _uses_old_dynamics(mdp):
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> pot starts cooking automatically -> pick up a dish -> use dish on ready pot "
+            "to get soup -> deliver soup to serving location"
+        )
+        cook_rule = "When pot has 3 ingredients, it starts cooking automatically."
+    else:
+        soup_pipeline = (
+            "pick up ingredient (onion/tomato) from dispenser -> place in pot (3 needed) "
+            "-> INTERACT with the full pot (while holding nothing) to start cooking "
+            "-> pick up a dish -> use dish on ready pot to get soup -> deliver soup to serving location"
+        )
+        cook_rule = (
+            "When pot has 3 ingredients it is FULL but idle. You must INTERACT with empty hands "
+            "to start cooking."
+        )
+
+    return f"""You are {worker_id}, a chef in Overcooked. You are Player {agent_index}.
+
+YOUR ROLE:
+- Execute the task assigned to you by your coordinator
+- Focus on completing your current task efficiently
+- Navigate the kitchen and interact with objects to accomplish your goal
+
+GAME RULES:
+- Make soups by: {soup_pipeline}
+- CRITICAL: You can hold ONLY ONE ITEM at a time. You must put down what you're holding (on a counter or in a pot) before picking up something else.
 - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
-- You share the kitchen with a partner. Coordinate to avoid blocking each other.
 - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
 
 LAYOUT:
@@ -225,11 +565,47 @@ Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, '
 KEY LOCATIONS:
 {locations_str}
 
-STRATEGY TIPS:
-- To pick up an onion: stand adjacent to an onion dispenser, face it, then INTERACT.
-- To place in pot: stand adjacent to a pot, face it, then INTERACT.
-- When pot has 3 ingredients, it starts cooking automatically.
-- When pot is ready: pick up a dish (from dish dispenser 'D' or a counter), stand adjacent to pot facing it, INTERACT to get soup.
-- Deliver soup: carry soup to a serving location, face it, INTERACT.
+ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
+- **ADJACENT means your position differs by exactly 1 in X OR Y coordinate (not both)**
+  - Example: You at (1,1), target at (0,1) → ADJACENT (X differs by 1)
+  - Example: You at (3,1), target at (4,1) → ADJACENT (X differs by 1)
+  - Example: You at (2,1), target at (2,0) → ADJACENT (Y differs by 1)
+- To pick up an onion: **stand adjacent to dispenser** and face it, then INTERACT immediately
+- To pick up a tomato: **stand adjacent to dispenser** and face it, then INTERACT immediately
+- To place ingredient in pot: **stand adjacent to pot** and face it, then INTERACT immediately
+- {cook_rule}
+- If pot shows 3/3 ingredients but not READY and not COOKING: go to pot with empty hands and INTERACT to start cooking.
+- NEVER try to pick up soup unless pot status says READY.
+- To get soup from ready pot: pick up a dish first, then **stand adjacent to pot** and face it before INTERACT
+- To pick up a dish: **stand adjacent to dish dispenser** and face it, then INTERACT
+- To deliver soup: **stand adjacent to serving location** and face it, then INTERACT
 
-Each turn you receive the current game state. You may use observation tools to gather info, then MUST call exactly one action tool to make your move."""
+CRITICAL - CHECK ADJACENCY BEFORE EVERY MOVE:
+Step 1: Calculate distance: |your_x - target_x| + |your_y - target_y|
+Step 2: If distance == 1 → YOU ARE ADJACENT! Check facing direction, then INTERACT
+Step 3: If distance > 1 → Move closer (use check_path to find route)
+
+CONCRETE EXAMPLES (MEMORIZE THESE):
+- You at (1,1), target at (0,1): |1-0| + |1-1| = 1 → ADJACENT! Face left, INTERACT
+- You at (3,1), target at (4,1): |3-4| + |1-1| = 1 → ADJACENT! Face right, INTERACT
+- You at (2,1), target at (2,0): |2-2| + |1-0| = 1 → ADJACENT! Face up, INTERACT
+- You at (1,1), target at (3,3): |1-3| + |1-3| = 4 → NOT adjacent, need to move
+
+DO NOT move onto the target square - you must INTERACT from the adjacent square!
+
+NAVIGATION TIPS:
+- **Use check_path() tool** to find the shortest route to your destination before moving
+- You'll see another entity (@) in the kitchen - navigate around them if they're blocking your path
+- **The layout has counters and walls** - you cannot move through them! Use check_path() to plan routes around obstacles
+- If direct path is blocked, check_path() will tell you how many steps via the valid route
+- If check_path() returns a large number of steps, there might be obstacles - plan accordingly
+- Always ensure you're facing the correct direction before interacting
+
+WORKFLOW FOR EACH TURN:
+1. **Read the game state** - Check your current position and what you're holding
+2. **Use observation tools** - Call get_surroundings() to see adjacent cells, or check_path() to find routes
+3. **Plan your action** - Based on observations, decide the best move
+4. **Execute ONE action** - Call exactly one action tool (move or interact)
+5. **IMPORTANT**: If you tried to move but your position didn't change, you're BLOCKED! Try a different direction or route.
+
+Each turn you receive the current game state and your assigned task. Use observation tools first, then call exactly one action tool to make your move."""
