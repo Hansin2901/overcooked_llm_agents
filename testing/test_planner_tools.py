@@ -148,23 +148,22 @@ class TestPlannerTools(unittest.TestCase):
         self.assertIsNone(self.worker_1_state.current_task)
 
     def test_assign_tasks_unknown_worker_id(self):
-        """Test assign_tasks with unknown worker_id returns error."""
+        """Test assign_tasks with unknown worker_id returns error for wrong set of workers."""
         assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
 
-        # Create assignments with unknown worker
+        # Create assignments with unknown worker (wrong set)
         assignments = json.dumps(
             {"worker_0": "Pick up onion", "worker_999": "Unknown worker task"}
         )
 
         result = assign_tasks.invoke({"assignments": assignments})
 
-        # Should indicate error for unknown worker
-        self.assertIn("worker_999", result)
-        self.assertIn("Unknown", result)
+        # Should indicate error for wrong worker set
+        self.assertIn("Error", result)
+        self.assertIn("both workers", result.lower())
 
-        # worker_0 should still be assigned (partial success)
-        self.assertIsNotNone(self.worker_0_state.current_task)
-        self.assertEqual(self.worker_0_state.current_task.description, "Pick up onion")
+        # No tasks should be assigned due to validation failure
+        self.assertIsNone(self.worker_0_state.current_task)
 
     def test_assign_tasks_non_dict_json(self):
         """Test assign_tasks with non-dict JSON returns error."""
@@ -182,31 +181,34 @@ class TestPlannerTools(unittest.TestCase):
         """Test assign_tasks with non-string task description returns error."""
         assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
 
-        # Task description is not a string
+        # Task description is not a string - include both workers
         assignments = json.dumps(
             {
-                "worker_0": 123  # number instead of string
+                "worker_0": 123,  # number instead of string
+                "worker_1": "Valid task",
             }
         )
 
         result = assign_tasks.invoke({"assignments": assignments})
 
-        # Should indicate error
+        # Should indicate error for non-string task
         self.assertIn("must be a string", result)
 
     def test_multiple_task_assignments(self):
         """Test assigning tasks multiple times overwrites previous tasks."""
         assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
 
-        # First assignment
-        assignments1 = json.dumps({"worker_0": "Task 1"})
+        # First assignment - must include both workers
+        assignments1 = json.dumps({"worker_0": "Task 1", "worker_1": "Task A"})
         assign_tasks.invoke({"assignments": assignments1})
         self.assertEqual(self.worker_0_state.current_task.description, "Task 1")
+        self.assertEqual(self.worker_1_state.current_task.description, "Task A")
 
-        # Second assignment (should overwrite)
-        assignments2 = json.dumps({"worker_0": "Task 2"})
+        # Second assignment (should overwrite) - must include both workers
+        assignments2 = json.dumps({"worker_0": "Task 2", "worker_1": "Task B"})
         assign_tasks.invoke({"assignments": assignments2})
         self.assertEqual(self.worker_0_state.current_task.description, "Task 2")
+        self.assertEqual(self.worker_1_state.current_task.description, "Task B")
 
     def test_fixtures_available(self):
         """Test that test fixtures can be imported and used."""
@@ -254,6 +256,15 @@ class TestPlannerTools(unittest.TestCase):
         self.assertEqual(obs_tools, [])
         self.assertEqual({t.name for t in action_tools}, {"assign_tasks"})
         self.assertEqual(action_tool_names, {"assign_tasks"})
+
+    def test_assign_tasks_requires_both_workers(self):
+        """Test assign_tasks validation rejects partial assignment payload."""
+        assign_tasks = next(t for t in self.action_tools if t.name == "assign_tasks")
+        result = assign_tasks.invoke(
+            {"assignments": json.dumps({"worker_0": "only one task"})}
+        )
+        self.assertIn("Error", result)
+        self.assertIn("both workers", result.lower())
 
 
 if __name__ == "__main__":

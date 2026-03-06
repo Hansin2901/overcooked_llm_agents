@@ -444,6 +444,9 @@ Respond ONLY with valid JSON:
   "worker_1": "short task description"
 }}
 
+- You MUST assign tasks to ALL workers (worker_0 and worker_1) in every call to assign_tasks
+- Partial assignments are not allowed - always include both workers
+
 Do NOT include explanations, markdown, or text outside JSON.
 """
 

@@ -53,12 +53,17 @@ def create_planner_tools(
         if not isinstance(parsed, dict):
             return "Error: Assignments must be a JSON object mapping worker_id to task description."
 
+        # Validate that all workers are assigned
+        expected_workers = set(worker_registry.keys())
+        if set(parsed.keys()) != expected_workers:
+            return (
+                "Error: assign_tasks must provide tasks for both workers. "
+                f"Expected keys: {sorted(expected_workers)}"
+            )
+
         errors = []
         assigned = []
         for worker_id, description in parsed.items():
-            if worker_id not in worker_registry:
-                errors.append(f"Unknown worker_id '{worker_id}'")
-                continue
             if not isinstance(description, str):
                 errors.append(
                     f"Task for '{worker_id}' must be a string, got {type(description).__name__}"
