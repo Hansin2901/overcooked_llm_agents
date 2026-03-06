@@ -417,6 +417,12 @@ TASK ASSIGNMENT GUIDELINES:
 4. Ensure tasks are feasible given worker constraints (can only hold one item, must be adjacent to interact).
 5. Assign tasks immediately using the assign_tasks tool - no observation phase needed.
 
+STATE-GROUNDED PLANNING CONSTRAINTS:
+- Plan based ONLY on current observed state - Do not assume a worker will complete their task.
+- Re-evaluate worker positions and inventory every replan cycle.
+- Assign both workers every replan, even if their previous task is not complete.
+- Workers may get blocked, distracted, or take longer than expected - always check the actual state.
+
 ASSIGNMENT WORKFLOW:
 - You receive complete state context including worker positions, inventory, and pot status.
 - Analyze the state and plan complementary tasks for both workers.

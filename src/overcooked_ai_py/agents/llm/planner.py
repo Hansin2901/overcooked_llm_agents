@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from overcooked_ai_py.agents.llm.graph_builder import build_react_graph
 from overcooked_ai_py.agents.llm.planner_tools import create_planner_tools
 from overcooked_ai_py.agents.llm.state_serializer import (
+    DIRECTION_NAMES,
     build_planner_system_prompt,
     serialize_state,
 )
@@ -54,7 +55,6 @@ class Planner:
         self._system_prompt = None
         self._worker_registry: dict[str, ToolState] = {}
         self._last_plan_step = -1  # Timestep of last planning
-        self._history_size = 5  # how many recent timesteps to summarize
 
     def register_worker(self, worker_id: str, worker_tool_state: ToolState):
         """Register a worker. Called during setup.
@@ -75,9 +75,7 @@ class Planner:
         self._tool_state.init(mdp, motion_planner)
 
         worker_ids = list(self._worker_registry.keys())
-        self._system_prompt = build_planner_system_prompt(
-            mdp, worker_ids, self.horizon
-        )
+        self._system_prompt = build_planner_system_prompt(mdp, worker_ids, self.horizon)
 
         obs_tools, act_tools, act_names = create_planner_tools(
             self._tool_state, self._worker_registry
@@ -124,6 +122,28 @@ class Planner:
                 return True
         return None
 
+    def _build_worker_snapshot_text(self) -> str:
+        """Build deterministic snapshot of all worker states.
+
+        Returns a formatted text with worker position, facing, holding, task, and steps_active.
+        This provides the planner with complete context for state-grounded planning.
+        """
+        lines = ["Worker snapshots:"]
+        for wid, ts in sorted(self._worker_registry.items()):
+            if ts.state is None:
+                lines.append(f"  {wid}: (state not initialized)")
+                continue
+
+            player = ts.state.players[ts.agent_index]
+            held = player.held_object.name if player.held_object else "nothing"
+            facing = DIRECTION_NAMES.get(player.orientation, str(player.orientation))
+            task = ts.current_task.description if ts.current_task else "none"
+            steps = ts.current_task.steps_active if ts.current_task else 0
+            lines.append(
+                f"  {wid}: pos={player.position}, facing={facing}, holding={held}, task={task}, steps_active={steps}"
+            )
+        return "\n".join(lines)
+
     def should_replan(self, state) -> bool:
         """Check if replanning is needed.
 
@@ -162,101 +182,27 @@ class Planner:
         if not self.should_replan(state):
             return
 
-        # Serialize state for the planner (use agent_index=0 for full view)
-        state_text = serialize_state(self._tool_state.mdp, state, 0, self.horizon)
-        self._tool_state.set_state(state, 0)
-
-        # Include worker statuses
-        statuses = []
-        for wid, ts in self._worker_registry.items():
-            status_dict = ts.get_status()
-            if status_dict["status"] == "idle":
-                statuses.append(f"  {wid} (Player {wid[-1]}): idle")
-            else:
-                statuses.append(
-                    f"  {wid} (Player {wid[-1]}): {status_dict['status']} - "
-                    f"{status_dict['task']} (active for {status_dict['steps_active']} steps)"
-                )
-        status_text = "\n".join(statuses)
-
-        # Build short recent step history from worker ToolState histories
-        step_history_lines = []
-        all_timesteps = set()
-        for ts in self._worker_registry.values():
-            for entry in getattr(ts, "history", []) or []:
-                t = entry.get("timestep")
-                if t is not None:
-                    all_timesteps.add(int(t))
-
-        if all_timesteps:
-            recent_ts = sorted(all_timesteps)[-self._history_size :]
-            step_history_lines.append("Recent step history (up to last 5 steps):")
-            for t in recent_ts:
-                step_line_parts = []
-                for wid, ts in self._worker_registry.items():
-                    # find latest entry for this timestep for this worker
-                    entries = [e for e in getattr(ts, "history", []) or [] if int(e.get("timestep", -1)) == t]
-                    if not entries:
-                        continue
-                    e = entries[-1]
-                    action = e.get("action", "?")
-                    task_desc = e.get("task") or "no task"
-                    step_line_parts.append(f"{wid}: action={action}, task={task_desc!r}")
-                if step_line_parts:
-                    step_history_lines.append(f"  Step {t}: " + " | ".join(step_line_parts))
-
-        history_block = ""
-        if step_history_lines:
-            history_block = "\n".join(step_history_lines) + "\n\n"
-
-        # prompt = (
-        #     f"{history_block}"
-        #     f"Worker statuses:\n{status_text}\n\n"
-        #     f"Current game state:\n{state_text}\n\n"
-        #     "Use the recent step history to avoid repeating unproductive behavior and to continue from what has already been accomplished.\n"
-        #     "Assign short, complementary tasks to your workers based on the current state and recent step history."
-        # )
-
-        prompt = (
-            # f"HISTORY {history_block}"
-            f"Worker statuses:\n{status_text}\n\n"
-            f"Current game state:\n{state_text}\n\n"
-        )
-
-
-        messages = [
-            SystemMessage(content=self._system_prompt),
-            HumanMessage(content=prompt),
-        ]
-
-        # Invoke with recursion limit to prevent infinite loops
-        # Planner may need more steps for complex reasoning
-        if self.debug:
-            print(f"  [Planner] Invoking graph (step {state.timestep})...")
-
         try:
+            if self.observability is not None:
+                self.observability.start_role("planner")
+
             # Serialize state for the planner (use agent_index=0 for full view)
-            state_text = serialize_state(self._tool_state.mdp, state, 0, self.horizon)
             self._tool_state.set_state(state, 0)
 
-            # Include worker statuses
-            statuses = []
-            for wid, ts in self._worker_registry.items():
-                status_dict = ts.get_status()
-                if status_dict["status"] == "idle":
-                    statuses.append(f"  {wid} (Player {wid[-1]}): idle")
-                else:
-                    statuses.append(
-                        f"  {wid} (Player {wid[-1]}): {status_dict['status']} - "
-                        f"{status_dict['task']} (active for {status_dict['steps_active']} steps)"
-                    )
-            status_text = "\n".join(statuses)
+            # Build deterministic worker snapshot
+            worker_snapshot = self._build_worker_snapshot_text()
 
-            prompt = (
-                f"Worker statuses:\n{status_text}\n\n"
-                f"Current game state:\n{state_text}\n\n"
-                f"Assign tasks to your workers."
+            # Serialize current state
+            state_desc = serialize_state(
+                self._tool_state.mdp, state, agent_index=0, horizon=self.horizon
             )
+
+            # Build prompt with snapshot and state
+            prompt = f"""{worker_snapshot}
+
+{state_desc}
+
+Current timestep: {state.timestep} / {self.horizon}"""
 
             messages = [
                 SystemMessage(content=self._system_prompt),

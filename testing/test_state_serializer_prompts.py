@@ -22,7 +22,9 @@ class TestPlannerSystemPrompt(unittest.TestCase):
         prompt = build_planner_system_prompt(self.mdp, self.worker_ids, horizon=200)
 
         for worker_id in self.worker_ids:
-            self.assertIn(worker_id, prompt, f"Planner prompt should include {worker_id}")
+            self.assertIn(
+                worker_id, prompt, f"Planner prompt should include {worker_id}"
+            )
 
     def test_planner_prompt_mentions_task_assignment(self):
         """Planner prompt should emphasize task assignment role."""
@@ -37,18 +39,27 @@ class TestPlannerSystemPrompt(unittest.TestCase):
         ]
 
         for keyword in task_keywords:
-            self.assertIn(keyword.lower(), prompt.lower(),
-                         f"Planner prompt should mention '{keyword}'")
+            self.assertIn(
+                keyword.lower(),
+                prompt.lower(),
+                f"Planner prompt should mention '{keyword}'",
+            )
 
     def test_planner_prompt_mentions_no_worker_communication(self):
         """Planner prompt should emphasize workers can't communicate."""
         prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
 
         # Workers cannot communicate is a critical constraint
-        self.assertIn("CANNOT communicate", prompt,
-                     "Planner should know workers can't communicate")
-        self.assertIn("independently", prompt.lower(),
-                     "Planner should understand workers work independently")
+        self.assertIn(
+            "CANNOT communicate",
+            prompt,
+            "Planner should know workers can't communicate",
+        )
+        self.assertIn(
+            "independently",
+            prompt.lower(),
+            "Planner should understand workers work independently",
+        )
 
     def test_planner_prompt_clarifies_cooking_start(self):
         """Planner prompt should clarify that full pots need cooking start action."""
@@ -79,8 +90,11 @@ class TestPlannerSystemPrompt(unittest.TestCase):
         ]
 
         for keyword in strategy_keywords:
-            self.assertIn(keyword.lower(), prompt.lower(),
-                         f"Planner should have guidance about '{keyword}'")
+            self.assertIn(
+                keyword.lower(),
+                prompt.lower(),
+                f"Planner should have guidance about '{keyword}'",
+            )
 
     def test_planner_prompt_includes_horizon(self):
         """Planner prompt should mention horizon if provided."""
@@ -109,10 +123,30 @@ class TestPlannerSystemPrompt(unittest.TestCase):
         prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
 
         # Planner doesn't execute actions directly
-        self.assertNotIn("move_up", prompt.lower(),
-                        "Planner shouldn't mention specific movement actions")
-        self.assertNotIn("action tool", prompt.lower(),
-                        "Planner doesn't use action tools directly")
+        self.assertNotIn(
+            "move_up",
+            prompt.lower(),
+            "Planner shouldn't mention specific movement actions",
+        )
+        self.assertNotIn(
+            "action tool", prompt.lower(), "Planner doesn't use action tools directly"
+        )
+
+    def test_planner_prompt_forbids_completion_assumptions(self):
+        """Planner prompt should forbid assuming task completion."""
+        prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
+        self.assertIn("Do not assume a worker will complete", prompt)
+        self.assertIn("current observed state", prompt)
+
+    def test_planner_prompt_includes_state_grounded_constraints(self):
+        """Planner prompt should include all state-grounded planning constraints."""
+        prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
+
+        # Check for all 4 key constraints
+        self.assertIn("Plan based ONLY on current observed state", prompt)
+        self.assertIn("Re-evaluate worker positions and inventory", prompt)
+        self.assertIn("Assign both workers every replan", prompt)
+        self.assertIn("Workers may get blocked, distracted", prompt)
 
 
 class TestWorkerSystemPrompt(unittest.TestCase):
@@ -139,30 +173,33 @@ class TestWorkerSystemPrompt(unittest.TestCase):
 
         # At least some of these should be present
         found_keywords = [kw for kw in task_keywords if kw.lower() in prompt.lower()]
-        self.assertGreater(len(found_keywords), 0,
-                          f"Worker prompt should mention task execution. Found: {found_keywords}")
+        self.assertGreater(
+            len(found_keywords),
+            0,
+            f"Worker prompt should mention task execution. Found: {found_keywords}",
+        )
 
     def test_worker_prompt_does_not_mention_other_workers(self):
         """Worker prompt should NOT mention other workers or coordination."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
 
         # Worker shouldn't know about the multi-worker system
-        self.assertNotIn("worker_1", prompt,
-                        "Worker shouldn't see other worker IDs")
-        self.assertNotIn("other workers", prompt.lower(),
-                        "Worker shouldn't know about other workers")
-        self.assertNotIn("coordinate with", prompt.lower(),
-                        "Worker doesn't coordinate with others")
-        self.assertNotIn("planner", prompt.lower(),
-                        "Worker shouldn't mention the planner role explicitly")
+        self.assertNotIn("worker_1", prompt, "Worker shouldn't see other worker IDs")
+        self.assertNotIn(
+            "other workers", prompt.lower(), "Worker shouldn't know about other workers"
+        )
+        self.assertNotIn(
+            "coordinate with", prompt.lower(), "Worker doesn't coordinate with others"
+        )
+        self.assertNotIn(
+            "planner",
+            prompt.lower(),
+            "Worker shouldn't mention the planner role explicitly",
+        )
 
     def test_worker_prompt_includes_layout_info(self):
         """Worker prompt should include layout for cramped_room."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
 
         # Check for layout section
         self.assertIn("LAYOUT:", prompt, "Prompt should have LAYOUT section")
@@ -173,27 +210,23 @@ class TestWorkerSystemPrompt(unittest.TestCase):
 
     def test_worker_prompt_includes_worker_id(self):
         """Worker prompt should identify the worker by their ID."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
 
-        self.assertIn(self.worker_id, prompt,
-                     "Worker should know their own ID")
+        self.assertIn(self.worker_id, prompt, "Worker should know their own ID")
 
     def test_worker_prompt_includes_agent_index(self):
         """Worker prompt should mention which player they are."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
 
-        self.assertIn(f"Player {self.agent_index}", prompt,
-                     "Worker should know their player index")
+        self.assertIn(
+            f"Player {self.agent_index}",
+            prompt,
+            "Worker should know their player index",
+        )
 
     def test_worker_prompt_includes_action_guide(self):
         """Worker prompt should include detailed action instructions."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
 
         # Check for action guidance
         action_keywords = [
@@ -205,34 +238,32 @@ class TestWorkerSystemPrompt(unittest.TestCase):
         ]
 
         for keyword in action_keywords:
-            self.assertIn(keyword, prompt,
-                         f"Worker should have guidance about '{keyword}'")
+            self.assertIn(
+                keyword, prompt, f"Worker should have guidance about '{keyword}'"
+            )
 
     def test_worker_prompt_clarifies_cooking_start(self):
         """Worker prompt should clarify full pot vs ready soup."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
         self.assertIn("FULL but idle", prompt)
         self.assertIn("INTERACT with empty hands", prompt)
         self.assertIn("NEVER try to pick up soup unless pot status says READY", prompt)
 
     def test_worker_prompt_mentions_partner_entity(self):
         """Worker should know about the @ entity but not that it's another worker."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
 
         # Should mention the @ entity for navigation
         self.assertIn("@", prompt, "Worker should see @ in the environment")
-        self.assertIn("entity", prompt.lower(),
-                     "Worker should be aware of other entity for navigation")
+        self.assertIn(
+            "entity",
+            prompt.lower(),
+            "Worker should be aware of other entity for navigation",
+        )
 
     def test_worker_prompt_includes_navigation_tips(self):
         """Worker prompt should include navigation guidance."""
-        prompt = build_worker_system_prompt(
-            self.mdp, self.agent_index, self.worker_id
-        )
+        prompt = build_worker_system_prompt(self.mdp, self.agent_index, self.worker_id)
 
         nav_keywords = [
             "navigate",
@@ -241,22 +272,21 @@ class TestWorkerSystemPrompt(unittest.TestCase):
         ]
 
         for keyword in nav_keywords:
-            self.assertIn(keyword.lower(), prompt.lower(),
-                         f"Worker should have navigation tip about '{keyword}'")
+            self.assertIn(
+                keyword.lower(),
+                prompt.lower(),
+                f"Worker should have navigation tip about '{keyword}'",
+            )
 
     def test_worker_prompt_with_different_indices(self):
         """Worker prompt should work for both player 0 and player 1."""
         # Test player 0
-        prompt_0 = build_worker_system_prompt(
-            self.mdp, 0, "worker_0"
-        )
+        prompt_0 = build_worker_system_prompt(self.mdp, 0, "worker_0")
         self.assertIn("Player 0", prompt_0)
         self.assertIn("worker_0", prompt_0)
 
         # Test player 1
-        prompt_1 = build_worker_system_prompt(
-            self.mdp, 1, "worker_1"
-        )
+        prompt_1 = build_worker_system_prompt(self.mdp, 1, "worker_1")
         self.assertIn("Player 1", prompt_1)
         self.assertIn("worker_1", prompt_1)
 
@@ -300,12 +330,8 @@ class TestPromptConsistency(unittest.TestCase):
 
     def test_both_prompts_include_game_rules(self):
         """Both planner and worker should understand basic game rules."""
-        planner_prompt = build_planner_system_prompt(
-            self.mdp, self.worker_ids
-        )
-        worker_prompt = build_worker_system_prompt(
-            self.mdp, 0, "worker_0"
-        )
+        planner_prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
+        worker_prompt = build_worker_system_prompt(self.mdp, 0, "worker_0")
 
         # Common game rule keywords
         common_keywords = [
@@ -318,19 +344,17 @@ class TestPromptConsistency(unittest.TestCase):
         ]
 
         for keyword in common_keywords:
-            self.assertIn(keyword, planner_prompt,
-                         f"Planner should understand '{keyword}'")
-            self.assertIn(keyword, worker_prompt,
-                         f"Worker should understand '{keyword}'")
+            self.assertIn(
+                keyword, planner_prompt, f"Planner should understand '{keyword}'"
+            )
+            self.assertIn(
+                keyword, worker_prompt, f"Worker should understand '{keyword}'"
+            )
 
     def test_prompts_have_different_roles(self):
         """Planner and worker should have clearly different roles."""
-        planner_prompt = build_planner_system_prompt(
-            self.mdp, self.worker_ids
-        )
-        worker_prompt = build_worker_system_prompt(
-            self.mdp, 0, "worker_0"
-        )
+        planner_prompt = build_planner_system_prompt(self.mdp, self.worker_ids)
+        worker_prompt = build_worker_system_prompt(self.mdp, 0, "worker_0")
 
         # Planner-specific content
         self.assertIn("PLANNER", planner_prompt)

@@ -1,7 +1,7 @@
 """Unit tests for Planner class."""
 
 import unittest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import ANY, Mock, patch, MagicMock
 
 from overcooked_ai_py.agents.llm.planner import Planner
 from overcooked_ai_py.agents.llm.task import Task
@@ -355,8 +355,12 @@ class TestPlannerPromptContent(unittest.TestCase):
         self.assertIn("pot contents", prompt.lower())
         self.assertIn("assign_tasks", prompt)
 
-    def test_planner_tracks_planning_history(self):
-        """Planner should track recent assignment history across replans."""
+    def test_maybe_replan_prompt_includes_worker_state_snapshot(self):
+        """Planner prompt should include worker position/holding/task snapshot."""
+        from overcooked_ai_py.agents.llm.state_serializer import (
+            serialize_state,
+        )
+
         mdp = OvercookedGridworld.from_layout_name("cramped_room")
         state = mdp.get_standard_start_state()
 
@@ -366,77 +370,51 @@ class TestPlannerPromptContent(unittest.TestCase):
         planner.register_worker("worker_0", worker_0)
         planner.register_worker("worker_1", worker_1)
         planner._tool_state.mdp = mdp
-        planner._graph = Mock()
         planner._system_prompt = "planner prompt"
 
+        # Initialize worker states
+        worker_0.set_state(state, 0)
+        worker_1.set_state(state, 1)
+
+        # Assign tasks
         worker_0.current_task = Task(
             description="Pick up onion",
             worker_id="worker_0",
             created_at=0,
+            steps_active=2,
         )
         worker_1.current_task = Task(
             description="Get dish",
             worker_id="worker_1",
             created_at=0,
+            steps_active=1,
         )
+
+        # Mock graph to capture the prompt
+        sent_prompt = None
+
+        def mock_invoke(input_dict, config=None):
+            nonlocal sent_prompt
+            messages = input_dict.get("messages", [])
+            for msg in messages:
+                if hasattr(msg, "content"):
+                    sent_prompt = msg.content
+            return {"messages": []}
+
+        planner._graph = Mock()
+        planner._graph.invoke = mock_invoke
+
+        # Trigger replan
         planner.maybe_replan(state)
 
-        self.assertIsNotNone(planner.planning_history)
-        self.assertEqual(len(planner.planning_history), 1)
-        self.assertEqual(planner.planning_history[0]["step"], 0)
-
-        worker_0.current_task = Task(
-            description="Deliver onion to pot",
-            worker_id="worker_0",
-            created_at=5,
-        )
-        worker_1.current_task = Task(
-            description="Wait at serving area",
-            worker_id="worker_1",
-            created_at=5,
-        )
-        state.timestep = 5
-        planner.maybe_replan(state)
-
-        self.assertEqual(len(planner.planning_history), 2)
-        self.assertEqual(planner.planning_history[1]["step"], 5)
-
-    def test_planner_prompt_includes_planning_history(self):
-        """History-aware planner prompt should include previous assignments."""
-        from overcooked_ai_py.agents.llm.state_serializer import (
-            format_planner_prompt_with_history,
-        )
-
-        mdp = OvercookedGridworld.from_layout_name("cramped_room")
-        state = mdp.get_standard_start_state()
-        planning_history = [
-            {
-                "step": 0,
-                "assignments": {
-                    "worker_0": "Pick up onion",
-                    "worker_1": "Get dish",
-                },
-            },
-            {
-                "step": 5,
-                "assignments": {
-                    "worker_0": "Deliver onion to pot",
-                    "worker_1": "Wait at serving area",
-                },
-            },
-        ]
-
-        prompt = format_planner_prompt_with_history(
-            mdp=mdp,
-            state=state,
-            current_step=10,
-            history=planning_history,
-        )
-
-        self.assertIn("step 0", prompt.lower())
-        self.assertIn("step 5", prompt.lower())
-        self.assertIn("Pick up onion", prompt)
-        self.assertIn("current step is 10", prompt.lower())
+        # Verify snapshot content
+        self.assertIsNotNone(sent_prompt, "Prompt should be sent to graph")
+        self.assertIn("Worker snapshots:", sent_prompt)
+        self.assertIn("holding=", sent_prompt)
+        self.assertIn("pos=", sent_prompt)
+        self.assertIn("facing=", sent_prompt)
+        self.assertIn("task=", sent_prompt)
+        self.assertIn("steps_active=", sent_prompt)
 
 
 class TestPlannerObservability(unittest.TestCase):
@@ -462,7 +440,7 @@ class TestPlannerObservability(unittest.TestCase):
         sink.end_role.assert_called_once()
         sink.emit.assert_any_call(
             "planner.assignment",
-            unittest.mock.ANY,
+            ANY,
             step=state.timestep,
             agent_role="planner",
         )
