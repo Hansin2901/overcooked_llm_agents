@@ -46,6 +46,7 @@ class WorkerAgent(Agent):
         api_key: Optional[str] = None,
         observability=None,
         invoke_config: Optional[dict] = None,
+        history_size: int = 5,
     ):
         self.planner = planner
         self.worker_id = worker_id
@@ -56,6 +57,8 @@ class WorkerAgent(Agent):
         self.api_key = api_key
         self.observability = observability
         self.invoke_config = dict(invoke_config or {})
+        self.history_size = history_size
+        self._history = []
 
         self._tool_state = ToolState()
         self._graph = None
@@ -115,6 +118,48 @@ class WorkerAgent(Agent):
         except Exception as exc:
             if self.debug:
                 print(f"  [{self.worker_id}] observability emit failed: {exc}")
+
+    def _add_to_history(self, timestep, position, action, held, task_description):
+        """Record a compact history entry after each action."""
+        if self.history_size <= 0:
+            return
+        action_name = Action.ACTION_TO_CHAR.get(action, str(action))
+        self._history.append(
+            {
+                "timestep": timestep,
+                "position": position,
+                "action": action_name,
+                "held": held,
+                "task": task_description,
+            }
+        )
+        if len(self._history) > self.history_size:
+            self._history = self._history[-self.history_size :]
+
+    def _format_history(self):
+        """Format history entries for injection into the worker prompt.
+
+        Uses compact format with task-boundary markers:
+            RECENT HISTORY:
+            - Step 12: at (2,1) -> ^ [Task: Pick up onion]
+            --- New task ---
+            - Step 14: at (2,0) holding onion -> > [Task: Deliver to pot]
+        """
+        if not self._history or self.history_size <= 0:
+            return ""
+
+        lines = ["RECENT HISTORY:"]
+        prev_task = None
+        for entry in self._history:
+            if prev_task is not None and entry["task"] != prev_task:
+                lines.append("--- New task ---")
+            held_str = f" holding {entry['held']}" if entry["held"] != "nothing" else ""
+            lines.append(
+                f"- Step {entry['timestep']}: at {entry['position']}{held_str} "
+                f"-> {entry['action']} [Task: {entry['task']}]"
+            )
+            prev_task = entry["task"]
+        return "\n".join(lines)
 
     def action(self, state):
         """Choose an action based on current task and game state.
