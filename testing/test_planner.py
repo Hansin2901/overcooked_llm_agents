@@ -97,9 +97,7 @@ class TestPlannerInitMethod(unittest.TestCase):
         self.planner.init(self.mdp, self.motion_planner)
 
         # Verify calls
-        mock_prompt.assert_called_once_with(
-            self.mdp, ["worker_0", "worker_1"], 200
-        )
+        mock_prompt.assert_called_once_with(self.mdp, ["worker_0", "worker_1"], 200)
         mock_tools.assert_called_once()
         mock_graph.assert_called_once()
 
@@ -338,6 +336,107 @@ class TestMaybeReplan(unittest.TestCase):
         # Verify graph was invoked
         mock_graph_instance.invoke.assert_called_once()
         self.assertEqual(self.planner._last_plan_step, self.state.timestep)
+
+
+class TestPlannerPromptContent(unittest.TestCase):
+    """Test planner prompt content and formatting helpers."""
+
+    def test_planner_system_prompt_includes_task_decomposition_guidance(self):
+        """Planner prompt should include decomposition and validation guidance."""
+        from overcooked_ai_py.agents.llm.state_serializer import (
+            get_planner_system_prompt,
+        )
+
+        mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        prompt = get_planner_system_prompt(mdp, ["worker_0", "worker_1"])
+
+        self.assertIn("ONE clear objective", prompt)
+        self.assertIn("inventory", prompt.lower())
+        self.assertIn("pot contents", prompt.lower())
+        self.assertIn("assign_tasks", prompt)
+
+    def test_planner_tracks_planning_history(self):
+        """Planner should track recent assignment history across replans."""
+        mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        state = mdp.get_standard_start_state()
+
+        planner = Planner()
+        worker_0 = ToolState()
+        worker_1 = ToolState()
+        planner.register_worker("worker_0", worker_0)
+        planner.register_worker("worker_1", worker_1)
+        planner._tool_state.mdp = mdp
+        planner._graph = Mock()
+        planner._system_prompt = "planner prompt"
+
+        worker_0.current_task = Task(
+            description="Pick up onion",
+            worker_id="worker_0",
+            created_at=0,
+        )
+        worker_1.current_task = Task(
+            description="Get dish",
+            worker_id="worker_1",
+            created_at=0,
+        )
+        planner.maybe_replan(state)
+
+        self.assertIsNotNone(planner.planning_history)
+        self.assertEqual(len(planner.planning_history), 1)
+        self.assertEqual(planner.planning_history[0]["step"], 0)
+
+        worker_0.current_task = Task(
+            description="Deliver onion to pot",
+            worker_id="worker_0",
+            created_at=5,
+        )
+        worker_1.current_task = Task(
+            description="Wait at serving area",
+            worker_id="worker_1",
+            created_at=5,
+        )
+        state.timestep = 5
+        planner.maybe_replan(state)
+
+        self.assertEqual(len(planner.planning_history), 2)
+        self.assertEqual(planner.planning_history[1]["step"], 5)
+
+    def test_planner_prompt_includes_planning_history(self):
+        """History-aware planner prompt should include previous assignments."""
+        from overcooked_ai_py.agents.llm.state_serializer import (
+            format_planner_prompt_with_history,
+        )
+
+        mdp = OvercookedGridworld.from_layout_name("cramped_room")
+        state = mdp.get_standard_start_state()
+        planning_history = [
+            {
+                "step": 0,
+                "assignments": {
+                    "worker_0": "Pick up onion",
+                    "worker_1": "Get dish",
+                },
+            },
+            {
+                "step": 5,
+                "assignments": {
+                    "worker_0": "Deliver onion to pot",
+                    "worker_1": "Wait at serving area",
+                },
+            },
+        ]
+
+        prompt = format_planner_prompt_with_history(
+            mdp=mdp,
+            state=state,
+            current_step=10,
+            history=planning_history,
+        )
+
+        self.assertIn("step 0", prompt.lower())
+        self.assertIn("step 5", prompt.lower())
+        self.assertIn("Pick up onion", prompt)
+        self.assertIn("current step is 10", prompt.lower())
 
 
 class TestPlannerObservability(unittest.TestCase):

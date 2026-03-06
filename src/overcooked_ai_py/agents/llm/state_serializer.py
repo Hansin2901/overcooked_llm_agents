@@ -87,8 +87,10 @@ def _serialize_grid(mdp, state, agent_index):
                 row += mdp.terrain_mtx[y][x]
         lines.append(f"  {row}")
 
-    lines.append("Legend: Y=you, @=partner, X=counter, O=onion_disp, T=tomato_disp, "
-                 "P=pot, S=serving, D=dish_disp, #=wall, ' '=floor")
+    lines.append(
+        "Legend: Y=you, @=partner, X=counter, O=onion_disp, T=tomato_disp, "
+        "P=pot, S=serving, D=dish_disp, #=wall, ' '=floor"
+    )
     return "\n".join(lines)
 
 
@@ -104,7 +106,9 @@ def _serialize_players(state, agent_index):
 
     p_facing = DIRECTION_NAMES.get(partner.orientation, str(partner.orientation))
     p_held = _describe_held(partner)
-    lines.append(f"PARTNER: pos={partner.position}, facing={p_facing}, holding={p_held}")
+    lines.append(
+        f"PARTNER: pos={partner.position}, facing={p_facing}, holding={p_held}"
+    )
 
     return "\n".join(lines)
 
@@ -136,10 +140,14 @@ def _serialize_pots(mdp, state):
             soup = state.get_object(pot_pos)
             ingredients = soup.ingredients
             if soup.is_ready:
-                lines.append(f"  Pot at {pot_pos}: READY to serve ({', '.join(ingredients)})")
+                lines.append(
+                    f"  Pot at {pot_pos}: READY to serve ({', '.join(ingredients)})"
+                )
             elif soup.is_cooking:
                 remaining = soup.cook_time - soup._cooking_tick
-                lines.append(f"  Pot at {pot_pos}: cooking {remaining} ticks left ({', '.join(ingredients)})")
+                lines.append(
+                    f"  Pot at {pot_pos}: cooking {remaining} ticks left ({', '.join(ingredients)})"
+                )
             else:
                 if len(ingredients) >= 3 and not _uses_old_dynamics(mdp):
                     lines.append(
@@ -147,7 +155,9 @@ def _serialize_pots(mdp, state):
                         f"INTERACT with empty hands to start cooking."
                     )
                 else:
-                    lines.append(f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)})")
+                    lines.append(
+                        f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)})"
+                    )
 
     return "\n".join(lines)
 
@@ -270,6 +280,7 @@ PARTNER AWARENESS:
 ...
 """
 
+
 #     return f"""You are an AI chef in Overcooked, a cooperative cooking game. You are Player {agent_index}.
 
 # RULES:
@@ -357,8 +368,8 @@ def build_planner_system_prompt(mdp, worker_ids, horizon=None):
             "A pot with 3/3 ingredients is NOT ready soup and does NOT cook by itself; "
             "assign a worker to start cooking via INTERACT."
         )
-
-        return """You are the PLANNER in the cooperative cooking game Overcooked. Coordinate multiple workers to make and deliver soups as efficiently as possible.
+    return f"""You are the PLANNER in the cooperative cooking game Overcooked. Coordinate multiple workers to make and deliver soups as efficiently as possible.
+Workers CANNOT communicate directly and must execute their tasks independently.
 
 1. Core Principles
 Your planning must always be guided by these three principles:
@@ -371,6 +382,7 @@ RULES:
 - INTERACT picks up or drops items; must face the target square.
 - Coordinates: (x,y), x increases right, y increases downward.
 - Do not collect soup from a pot unless it is READY.
+- {cook_rule}{horizon_str}
 
 LAYOUT:
 {grid_str}
@@ -394,6 +406,23 @@ TASK GUIDELINES:
 - Pipeline tasks: prepare next soup while current soup cooks.
 - Avoid idle time, overlapping paths, and collisions.
 
+STRATEGY:
+- Divide responsibilities across workers so each has a complementary objective.
+- Maintain coordination by assigning non-overlapping paths and synchronized handoffs.
+
+TASK ASSIGNMENT GUIDELINES:
+1. Assign ONE clear objective per worker (avoid vague multi-goal instructions).
+2. Use the full context provided in the game state (worker positions, inventory, pot contents).
+3. Break complex plans into atomic tasks with explicit objects/locations.
+4. Ensure tasks are feasible given worker constraints (can only hold one item, must be adjacent to interact).
+5. Assign tasks immediately using the assign_tasks tool - no observation phase needed.
+
+ASSIGNMENT WORKFLOW:
+- You receive complete state context including worker positions, inventory, and pot status.
+- Analyze the state and plan complementary tasks for both workers.
+- Call assign_tasks ONCE with task descriptions for both workers.
+- Tasks should be specific, actionable, and coordinated to avoid conflicts.
+
 PRIORITY RULES:
 1. If a soup is ready first complete delivery before doing anything else.
 2. Keep pots cooking whenever possible.
@@ -404,13 +433,48 @@ PRIORITY RULES:
 OUTPUT FORMAT:
 Respond ONLY with valid JSON:
 
-{
+{{
   "worker_0": "short task description",
   "worker_1": "short task description"
-}
+}}
 
 Do NOT include explanations, markdown, or text outside JSON.
 """
+
+
+def get_planner_system_prompt(mdp, worker_ids, horizon=None):
+    """Backward-compatible alias for planner system prompt generation."""
+    return build_planner_system_prompt(mdp, worker_ids, horizon)
+
+
+def format_planner_prompt_with_history(mdp, state, current_step, history):
+    """Format planner human prompt with worker status, state, and recent assignments."""
+    if history is None:
+        history = []
+
+    state_text = serialize_state(mdp, state, agent_index=0)
+    lines = [f"Current game state:\n{state_text}\n"]
+
+    if history:
+        lines.append("Planning history (most recent first):")
+        for entry in reversed(history[-3:]):
+            step = entry.get("step")
+            assignments = entry.get("assignments", {})
+            lines.append(f"- Step {step}:")
+            if assignments:
+                for worker_id, task in sorted(assignments.items()):
+                    lines.append(f"  {worker_id}: {task}")
+            else:
+                lines.append("  (no assignments recorded)")
+        last_step = history[-1].get("step")
+        lines.append(
+            f"\nLast assignment step: {last_step}; current step is {current_step}."
+        )
+    else:
+        lines.append(f"No planning history yet. The current step is {current_step}.")
+
+    lines.append("\nAssign tasks to your workers.")
+    return "\n".join(lines)
 
 
 def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):
