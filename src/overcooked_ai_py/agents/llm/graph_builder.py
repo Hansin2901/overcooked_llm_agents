@@ -142,7 +142,8 @@ def build_react_graph(
             messages = [SystemMessage(content=system_prompt)] + messages
 
         if debug:
-            print(f"  {debug_prefix} Calling LLM...")
+            total_chars = sum(len(str(m.content)) for m in messages)
+            print(f"  {debug_prefix} Calling LLM (prompt: {total_chars} chars, {len(messages)} messages)...")
 
         try:
             # Create a span to capture LLM API call latency
@@ -157,11 +158,15 @@ def build_react_graph(
 
             # Measure LLM API call latency
             llm_start_time = time.time()
+            if debug:
+                print(f"  {debug_prefix} LLM API request starting...")
             response = _invoke_with_hard_timeout(
                 lambda: llm_with_tools.invoke(messages),
                 llm_timeout_seconds,
             )
             llm_duration_ms = (time.time() - llm_start_time) * 1000
+            if debug:
+                print(f"  {debug_prefix} LLM API response received ({llm_duration_ms:.0f}ms)")
 
             # End the LLM call span
             if llm_call_span is not None:

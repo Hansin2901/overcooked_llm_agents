@@ -53,6 +53,26 @@ LLM_API_BASE=https://tritonai-api.ucsd.edu/v1
 LLM_API_KEY=your-key-here
 ```
 
+**Observability & Tracing:**
+
+The project supports two tracing systems (both optional, can be used simultaneously):
+
+1. **LangSmith** (recommended for development/debugging):
+```bash
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=lsv2_pt_...  # Get from https://smith.langchain.com/settings
+LANGCHAIN_PROJECT=overcooked-ai  # Optional project name
+```
+
+2. **LangFuse** (recommended for production metrics):
+```bash
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_HOST=https://us.cloud.langfuse.com
+```
+
+See `docs/observability.md` for detailed tracing documentation. Local JSONL logs are always written to `logs/agent_runs/` regardless of tracing configuration.
+
 ## Common Commands
 
 ### Testing
