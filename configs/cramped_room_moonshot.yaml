@@ -1,8 +1,8 @@
 layout_name: cramped_room
 model_name: openai/moonshotai.kimi-k2.5
 horizon: 100
-debug: false
+debug: true
 visualize: true
 fps: 20
 agent_type: planner-worker
-replan_interval: 5
+replan_interval: 20
