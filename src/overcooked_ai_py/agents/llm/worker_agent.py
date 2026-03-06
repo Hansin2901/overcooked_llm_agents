@@ -17,6 +17,7 @@ from overcooked_ai_py.agents.llm.state_serializer import (
 from overcooked_ai_py.agents.llm.tool_state import ToolState
 from overcooked_ai_py.agents.llm.worker_tools import create_worker_tools
 from overcooked_ai_py.mdp.actions import Action
+from collections import defaultdict
 
 
 class WorkerAgent(Agent):
@@ -60,6 +61,7 @@ class WorkerAgent(Agent):
         self._tool_state = ToolState()
         self._graph = None
         self._system_prompt = None
+        self.cache = {}
         super().__init__()
 
     def set_mdp(self, mdp):
@@ -163,8 +165,15 @@ class WorkerAgent(Agent):
                 print(f"  [{self.worker_id}] Invoking graph (step {state.timestep})...")
 
             try:
-                invoke_config = {**self.invoke_config, "recursion_limit": 15}
+                invoke_config = {**self.invoke_config, "recursion_limit": 6}
+                # cache_key = f"{task_text}|{state_text}"
                 try:
+                    # if cache_key in self.cache:
+                    #     chosen = self.cache[cache_key]
+                    #     self._tool_state.chosen_action = chosen
+
+                    #     if self.debug:
+                    #         print(f"  [{self.worker_id}] Cache hit")
                     self._graph.invoke(
                         {"messages": messages},
                         config=invoke_config,

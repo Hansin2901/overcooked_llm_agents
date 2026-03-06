@@ -471,68 +471,109 @@ def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):
             "to start cooking."
         )
 
-    return f"""You are {worker_id}, a chef in Overcooked. You are Player {agent_index}.
+        return f"""You are {worker_id}. You control Player {agent_index} in Overcooked.
 
-YOUR ROLE:
-- Execute the task assigned to you by your coordinator
-- Focus on completing your current task efficiently
-- Navigate the kitchen and interact with objects to accomplish your goal
+Your goal is to execute the assigned task efficiently.
 
-GAME RULES:
-- Make soups by: {soup_pipeline}
-- CRITICAL: You can hold ONLY ONE ITEM at a time. You must put down what you're holding (on a counter or in a pot) before picking up something else.
-- INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
-- To face a direction, move in that direction (even if blocked, your orientation updates).
-- Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+RULES
+- You can hold only ONE item.
+- INTERACT picks up, places, or activates objects.
+- You must FACE the target tile to INTERACT.
+- Moving also changes orientation.
+- Coordinates: (x,y). x→right, y→down.{horizon_str}
 
-LAYOUT:
-{grid_str}
-Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+SOUP RECIPE
+{soup_pipeline}
 
-KEY LOCATIONS:
+KEY LOCATIONS
 {locations_str}
 
-ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
-- **ADJACENT means your position differs by exactly 1 in X OR Y coordinate (not both)**
-  - Example: You at (1,1), target at (0,1) → ADJACENT (X differs by 1)
-  - Example: You at (3,1), target at (4,1) → ADJACENT (X differs by 1)
-  - Example: You at (2,1), target at (2,0) → ADJACENT (Y differs by 1)
-- To pick up an onion: **stand adjacent to dispenser** and face it, then INTERACT immediately
-- To pick up a tomato: **stand adjacent to dispenser** and face it, then INTERACT immediately
-- To place ingredient in pot: **stand adjacent to pot** and face it, then INTERACT immediately
-- {cook_rule}
-- If pot shows 3/3 ingredients but not READY and not COOKING: go to pot with empty hands and INTERACT to start cooking.
-- NEVER try to pick up soup unless pot status says READY.
-- To get soup from ready pot: pick up a dish first, then **stand adjacent to pot** and face it before INTERACT
-- To pick up a dish: **stand adjacent to dish dispenser** and face it, then INTERACT
-- To deliver soup: **stand adjacent to serving location** and face it, then INTERACT
+INTERACTION RULE
+Distance = |x1-x2| + |y1-y2|
 
-CRITICAL - CHECK ADJACENCY BEFORE EVERY MOVE:
-Step 1: Calculate distance: |your_x - target_x| + |your_y - target_y|
-Step 2: If distance == 1 → YOU ARE ADJACENT! Check facing direction, then INTERACT
-Step 3: If distance > 1 → Move closer (use check_path to find route)
+distance == 1 → already adjacent → face target → INTERACT  
+distance > 1 → move toward target
 
-CONCRETE EXAMPLES (MEMORIZE THESE):
-- You at (1,1), target at (0,1): |1-0| + |1-1| = 1 → ADJACENT! Face left, INTERACT
-- You at (3,1), target at (4,1): |3-4| + |1-1| = 1 → ADJACENT! Face right, INTERACT
-- You at (2,1), target at (2,0): |2-2| + |1-0| = 1 → ADJACENT! Face up, INTERACT
-- You at (1,1), target at (3,3): |1-3| + |1-3| = 4 → NOT adjacent, need to move
+TASK ACTIONS
+- ingredient → go to dispenser → pick up → pot
+- dish → dish dispenser
+- soup → dish + READY pot
+- deliver → serving station
+- start cooking → pot with 3 ingredients
 
-DO NOT move onto the target square - you must INTERACT from the adjacent square!
+NAVIGATION
+- Walls/counters block movement.
+- Use check_path() to find routes.
+- Avoid the other player.
 
-NAVIGATION TIPS:
-- **Use check_path() tool** to find the shortest route to your destination before moving
-- You'll see another entity (@) in the kitchen - navigate around them if they're blocking your path
-- **The layout has counters and walls** - you cannot move through them! Use check_path() to plan routes around obstacles
-- If direct path is blocked, check_path() will tell you how many steps via the valid route
-- If check_path() returns a large number of steps, there might be obstacles - plan accordingly
-- Always ensure you're facing the correct direction before interacting
+TURN
+1. Read state + task
+2. Observe if needed
+3. Execute ONE action (move or interact)
+"""
 
-WORKFLOW FOR EACH TURN:
-1. **Read the game state** - Check your current position and what you're holding
-2. **Use observation tools** - Call get_surroundings() to see adjacent cells, or check_path() to find routes
-3. **Plan your action** - Based on observations, decide the best move
-4. **Execute ONE action** - Call exactly one action tool (move or interact)
-5. **IMPORTANT**: If you tried to move but your position didn't change, you're BLOCKED! Try a different direction or route.
+#     return f"""You are {worker_id}, a chef in Overcooked. You are Player {agent_index}.
 
-Each turn you receive the current game state and your assigned task. Use observation tools first, then call exactly one action tool to make your move."""
+# YOUR ROLE:
+# - Execute the task assigned to you by your coordinator
+# - Focus on completing your current task efficiently
+# - Navigate the kitchen and interact with objects to accomplish your goal
+
+# GAME RULES:
+# - Make soups by: {soup_pipeline}
+# - CRITICAL: You can hold ONLY ONE ITEM at a time. You must put down what you're holding (on a counter or in a pot) before picking up something else.
+# - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
+# - To face a direction, move in that direction (even if blocked, your orientation updates).
+# - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+# LAYOUT:
+# {grid_str}
+# Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, ' '=floor
+
+# KEY LOCATIONS:
+# {locations_str}
+
+# ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
+# - **ADJACENT means your position differs by exactly 1 in X OR Y coordinate (not both)**
+#   - Example: You at (1,1), target at (0,1) → ADJACENT (X differs by 1)
+#   - Example: You at (3,1), target at (4,1) → ADJACENT (X differs by 1)
+#   - Example: You at (2,1), target at (2,0) → ADJACENT (Y differs by 1)
+# - To pick up an onion: **stand adjacent to dispenser** and face it, then INTERACT immediately
+# - To pick up a tomato: **stand adjacent to dispenser** and face it, then INTERACT immediately
+# - To place ingredient in pot: **stand adjacent to pot** and face it, then INTERACT immediately
+# - {cook_rule}
+# - If pot shows 3/3 ingredients but not READY and not COOKING: go to pot with empty hands and INTERACT to start cooking.
+# - NEVER try to pick up soup unless pot status says READY.
+# - To get soup from ready pot: pick up a dish first, then **stand adjacent to pot** and face it before INTERACT
+# - To pick up a dish: **stand adjacent to dish dispenser** and face it, then INTERACT
+# - To deliver soup: **stand adjacent to serving location** and face it, then INTERACT
+
+# CRITICAL - CHECK ADJACENCY BEFORE EVERY MOVE:
+# Step 1: Calculate distance: |your_x - target_x| + |your_y - target_y|
+# Step 2: If distance == 1 → YOU ARE ADJACENT! Check facing direction, then INTERACT
+# Step 3: If distance > 1 → Move closer (use check_path to find route)
+
+# CONCRETE EXAMPLES (MEMORIZE THESE):
+# - You at (1,1), target at (0,1): |1-0| + |1-1| = 1 → ADJACENT! Face left, INTERACT
+# - You at (3,1), target at (4,1): |3-4| + |1-1| = 1 → ADJACENT! Face right, INTERACT
+# - You at (2,1), target at (2,0): |2-2| + |1-0| = 1 → ADJACENT! Face up, INTERACT
+# - You at (1,1), target at (3,3): |1-3| + |1-3| = 4 → NOT adjacent, need to move
+
+# DO NOT move onto the target square - you must INTERACT from the adjacent square!
+
+# NAVIGATION TIPS:
+# - **Use check_path() tool** to find the shortest route to your destination before moving
+# - You'll see another entity (@) in the kitchen - navigate around them if they're blocking your path
+# - **The layout has counters and walls** - you cannot move through them! Use check_path() to plan routes around obstacles
+# - If direct path is blocked, check_path() will tell you how many steps via the valid route
+# - If check_path() returns a large number of steps, there might be obstacles - plan accordingly
+# - Always ensure you're facing the correct direction before interacting
+
+# WORKFLOW FOR EACH TURN:
+# 1. **Read the game state** - Check your current position and what you're holding
+# 2. **Use observation tools** - Call get_surroundings() to see adjacent cells, or check_path() to find routes
+# 3. **Plan your action** - Based on observations, decide the best move
+# 4. **Execute ONE action** - Call exactly one action tool (move or interact)
+# 5. **IMPORTANT**: If you tried to move but your position didn't change, you're BLOCKED! Try a different direction or route.
+
+# Each turn you receive the current game state and your assigned task. Use observation tools first, then call exactly one action tool to make your move."""

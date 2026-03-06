@@ -269,7 +269,7 @@ class Planner:
                 print(f"  [Planner] Invoking graph (step {state.timestep})...")
 
             try:
-                invoke_config = {**self.invoke_config, "recursion_limit": 20}
+                invoke_config = {**self.invoke_config, "recursion_limit": 8}
                 try:
                     self._graph.invoke(
                         {"messages": messages},

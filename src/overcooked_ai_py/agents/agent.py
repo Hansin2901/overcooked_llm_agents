@@ -9,6 +9,8 @@ import numpy as np
 from overcooked_ai_py.mdp.actions import Action
 from overcooked_ai_py.mdp.overcooked_mdp import Recipe
 from overcooked_ai_py.utils import OvercookedException
+from concurrent.futures import ThreadPoolExecutor
+
 
 
 class Agent(object):
@@ -162,6 +164,27 @@ class AgentPair(AgentGroup):
             return joint_action_and_infos
         else:
             return super().joint_action(state)
+
+class ParallelAgentPair(AgentPair):
+    """AgentPair that runs both agents' action() in parallel via a thread pool.
+
+    Use this for planner-worker mode to run the two worker LLM calls concurrently,
+    roughly halving wall-clock time per step when both workers call the API.
+    """
+
+    def __init__(self, *agents, allow_duplicate_agents=False, max_workers=2):
+        super().__init__(*agents, allow_duplicate_agents=allow_duplicate_agents)
+        self._max_workers = max_workers
+
+    def joint_action(self, state):
+        if self.a0 is self.a1:
+            return super().joint_action(state)
+        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
+            future_0 = executor.submit(self.a0.action, state)
+            future_1 = executor.submit(self.a1.action, state)
+            action_and_infos_0 = future_0.result()
+            action_and_infos_1 = future_1.result()
+        return (action_and_infos_0, action_and_infos_1)
 
 
 class NNPolicy(object):
