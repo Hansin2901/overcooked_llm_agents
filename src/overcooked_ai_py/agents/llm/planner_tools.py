@@ -11,6 +11,7 @@ import numpy as np
 from langchain_core.tools import tool
 
 from overcooked_ai_py.agents.llm.task import Task
+from overcooked_ai_py.agents.llm.state_serializer import _layout_recipe_context
 from overcooked_ai_py.agents.llm.tool_state import ToolState
 from overcooked_ai_py.mdp.actions import Action, Direction
 
@@ -29,29 +30,33 @@ def create_planner_tools(
     Returns: (observation_tools, action_tools, action_tool_names)
     """
 
-    # -------------------------------------------------------------------
-    # Observation Tools
-    # -------------------------------------------------------------------
-
     @tool
     def get_surroundings() -> str:
-        """Check what is adjacent to you in each direction (up/down/left/right). Returns terrain type and any objects at each adjacent cell."""
+        """Check what is adjacent in each direction."""
         player = planner_tool_state.state.players[planner_tool_state.agent_index]
         pos = player.position
         lines = []
-        for d, name in [(Direction.NORTH, "up"), (Direction.SOUTH, "down"),
-                         (Direction.EAST, "right"), (Direction.WEST, "left")]:
+        for d, name in [
+            (Direction.NORTH, "up"),
+            (Direction.SOUTH, "down"),
+            (Direction.EAST, "right"),
+            (Direction.WEST, "left"),
+        ]:
             adj = Action.move_in_direction(pos, d)
             x, y = adj
             if 0 <= x < planner_tool_state.mdp.width and 0 <= y < planner_tool_state.mdp.height:
                 terrain = planner_tool_state.mdp.terrain_mtx[y][x]
                 terrain_name = {
-                    " ": "floor", "X": "counter", "P": "pot",
-                    "O": "onion_dispenser", "T": "tomato_dispenser",
-                    "D": "dish_dispenser", "S": "serving_location", "#": "wall",
+                    " ": "floor",
+                    "X": "counter",
+                    "P": "pot",
+                    "O": "onion_dispenser",
+                    "T": "tomato_dispenser",
+                    "D": "dish_dispenser",
+                    "S": "serving_location",
+                    "#": "wall",
                 }.get(terrain, terrain)
 
-                # Check for objects
                 obj_desc = ""
                 if planner_tool_state.state.has_object(adj):
                     obj = planner_tool_state.state.get_object(adj)
@@ -59,19 +64,17 @@ def create_planner_tools(
                         if obj.is_ready:
                             obj_desc = " [READY SOUP]"
                         elif obj.is_cooking:
-                            obj_desc = f" [cooking, {obj.cook_time - obj._cooking_tick} ticks left]"
+                            remaining = obj.cook_time - obj._cooking_tick
+                            obj_desc = f" [cooking, {remaining} ticks left]"
+                        elif len(obj.ingredients) >= 3 and not planner_tool_state.mdp.old_dynamics:
+                            obj_desc = " [FULL 3/3, NOT COOKING - interact with empty hands to start]"
                         else:
-                            if len(obj.ingredients) >= 3 and not planner_tool_state.mdp.old_dynamics:
-                                obj_desc = " [FULL 3/3, NOT COOKING - INTERACT with empty hands to start]"
-                            else:
-                                obj_desc = f" [{len(obj.ingredients)}/3 ingredients]"
+                            obj_desc = f" [{len(obj.ingredients)}/3 ingredients]"
                     else:
                         obj_desc = f" [{obj.name}]"
 
-                # Check for other player
                 partner = planner_tool_state.state.players[1 - planner_tool_state.agent_index]
                 player_desc = " [PARTNER HERE]" if adj == partner.position else ""
-
                 lines.append(f"  {name}: {terrain_name}{obj_desc}{player_desc}")
             else:
                 lines.append(f"  {name}: out of bounds")
@@ -80,8 +83,9 @@ def create_planner_tools(
 
     @tool
     def get_pot_details() -> str:
-        """Get detailed status of all pots: ingredients list, cooking timer, ready flag."""
+        """Get detailed status of all pots."""
         pot_states = planner_tool_state.mdp.get_pot_states(planner_tool_state.state)
+        recipe_context = _layout_recipe_context(planner_tool_state.mdp)
         lines = []
         for pot_pos in planner_tool_state.mdp.get_pot_locations():
             if pot_pos in pot_states.get("empty", []):
@@ -90,29 +94,40 @@ def create_planner_tools(
                 soup = planner_tool_state.state.get_object(pot_pos)
                 ingredients = soup.ingredients
                 if soup.is_ready:
-                    lines.append(f"Pot at {pot_pos}: READY! Ingredients: {', '.join(ingredients)}. Pick up a dish, face this pot, and interact to collect soup.")
+                    lines.append(
+                        f"Pot at {pot_pos}: READY! Ingredients: {', '.join(ingredients)}. "
+                        "Pick up a dish, face this pot, and interact to collect soup."
+                    )
                 elif soup.is_cooking:
                     remaining = soup.cook_time - soup._cooking_tick
-                    lines.append(f"Pot at {pot_pos}: COOKING, {remaining} ticks remaining. Ingredients: {', '.join(ingredients)}.")
+                    lines.append(
+                        f"Pot at {pot_pos}: COOKING, {remaining} ticks remaining. "
+                        f"Ingredients: {', '.join(ingredients)}."
+                    )
+                elif len(ingredients) >= 3 and not planner_tool_state.mdp.old_dynamics:
+                    lines.append(
+                        f"Pot at {pot_pos}: FULL (3/3) but NOT COOKING ({', '.join(ingredients)}). "
+                        "A worker with empty hands must INTERACT to start cooking."
+                    )
                 else:
-                    if len(ingredients) >= 3 and not planner_tool_state.mdp.old_dynamics:
-                        lines.append(
-                            f"Pot at {pot_pos}: FULL (3/3) but NOT COOKING ({', '.join(ingredients)}). "
-                            f"A worker with empty hands must INTERACT to start cooking."
-                        )
+                    needed = 3 - len(ingredients)
+                    if recipe_context["onion_only_three"]:
+                        need_text = f"Needs {needed} more onion(s)."
+                    elif recipe_context["tomato_only_three"]:
+                        need_text = f"Needs {needed} more tomato(es)."
                     else:
-                        lines.append(f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients ({', '.join(ingredients)}). Needs {3 - len(ingredients)} more.")
+                        need_text = f"Needs {needed} more ingredient(s)."
+                    lines.append(
+                        f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients "
+                        f"({', '.join(ingredients)}). {need_text}"
+                    )
         if not lines:
             return "No pots found."
         return "\n".join(lines)
 
     @tool
     def check_path(target: str) -> str:
-        """Check the number of steps to reach the nearest target location.
-
-        Args:
-            target: one of 'onion_dispenser', 'tomato_dispenser', 'dish_dispenser', 'pot', 'serving', 'dish' (counter dish), 'counter'
-        """
+        """Check steps to the nearest target."""
         player = planner_tool_state.state.players[planner_tool_state.agent_index]
         start = player.pos_and_or
 
@@ -126,7 +141,6 @@ def create_planner_tools(
         }
 
         if target == "dish":
-            # Find dishes on counters
             counter_objects = planner_tool_state.mdp.get_counter_objects_dict(planner_tool_state.state)
             positions = counter_objects.get("dish", [])
             if not positions:
@@ -134,7 +148,8 @@ def create_planner_tools(
         elif target in target_map:
             positions = target_map[target]()
         else:
-            return f"Unknown target '{target}'. Use one of: {', '.join(list(target_map.keys()) + ['dish'])}"
+            valid_targets = list(target_map.keys()) + ["dish"]
+            return f"Unknown target '{target}'. Use one of: {', '.join(valid_targets)}"
 
         if not positions:
             return f"No {target} locations found."
@@ -158,49 +173,58 @@ def create_planner_tools(
 
     @tool
     def get_worker_status(worker_id: str) -> str:
-        """Get the current status of a worker: idle, working, or completed, plus task details.
-
-        Args:
-            worker_id: The worker identifier (e.g. 'worker_0')
-        """
+        """Get the current status of a worker."""
         if worker_id not in worker_registry:
-            return f"Error: Unknown worker_id '{worker_id}'. Valid workers: {', '.join(sorted(worker_registry.keys()))}"
-        status = worker_registry[worker_id].get_status()
-        return json.dumps(status)
-
-    # -------------------------------------------------------------------
-    # Action Tools (termination)
-    # -------------------------------------------------------------------
+            valid_workers = ", ".join(sorted(worker_registry.keys()))
+            return f"Error: Unknown worker_id '{worker_id}'. Valid workers: {valid_workers}"
+        return json.dumps(worker_registry[worker_id].get_status())
 
     @tool
-    def assign_tasks(assignments: str) -> str:
-        """Assign tasks to workers. This ends your planning turn.
+    def assign_tasks(
+        assignments: str = "",
+        worker_0: str = "",
+        worker_1: str = "",
+    ) -> str:
+        """Assign tasks to workers and end the planning turn."""
+        if assignments:
+            if isinstance(assignments, dict):
+                parsed = assignments
+            else:
+                try:
+                    parsed = json.loads(assignments)
+                except json.JSONDecodeError as exc:
+                    return f"Error: Invalid assignments JSON - {exc}"
+        else:
+            parsed = {}
+            if worker_0:
+                parsed["worker_0"] = worker_0
+            if worker_1:
+                parsed["worker_1"] = worker_1
 
-        Args:
-            assignments: A JSON string mapping worker_id to task description.
-                Example: '{"worker_0": "Pick up onion", "worker_1": "Get a dish"}'
-        """
-        try:
-            parsed = json.loads(assignments)
-        except json.JSONDecodeError as e:
-            return f"Error: Invalid JSON — {e}"
-
-        if not isinstance(parsed, dict):
+        if not isinstance(parsed, dict) or not parsed:
             return "Error: Assignments must be a JSON object mapping worker_id to task description."
 
         errors = []
         assigned = []
-        for worker_id, description in parsed.items():
-            if worker_id not in worker_registry:
-                errors.append(f"Unknown worker_id '{worker_id}'")
-                continue
-            if not isinstance(description, str):
-                errors.append(f"Task for '{worker_id}' must be a string, got {type(description).__name__}")
-                continue
+        timestep = getattr(planner_tool_state.state, "timestep", 0) if planner_tool_state.state else 0
 
-            timestep = 0
-            if planner_tool_state.state is not None:
-                timestep = getattr(planner_tool_state.state, "timestep", 0)
+        for worker_id in sorted(worker_registry.keys()):
+            description = parsed.get(worker_id)
+            if not description:
+                existing = worker_registry[worker_id].current_task
+                if existing and not existing.completed:
+                    description = existing.description
+                else:
+                    description = (
+                        "Move to a non-blocking nearby tile and stay ready to support "
+                        "the other worker."
+                    )
+
+            if not isinstance(description, str):
+                errors.append(
+                    f"Task for '{worker_id}' must be a string, got {type(description).__name__}"
+                )
+                continue
 
             task = Task(
                 description=description,
@@ -210,16 +234,16 @@ def create_planner_tools(
             worker_registry[worker_id].set_task(task)
             assigned.append(f"{worker_id}: {description}")
 
+        unknown_workers = sorted(set(parsed.keys()) - set(worker_registry.keys()))
+        if unknown_workers:
+            errors.extend(f"Unknown worker_id '{worker_id}'" for worker_id in unknown_workers)
+
         result_parts = []
         if assigned:
             result_parts.append("Assigned: " + "; ".join(assigned))
         if errors:
             result_parts.append("Errors: " + "; ".join(errors))
         return ". ".join(result_parts) if result_parts else "No assignments made."
-
-    # -------------------------------------------------------------------
-    # Collect and return
-    # -------------------------------------------------------------------
 
     observation_tools = [get_surroundings, get_pot_details, check_path, get_worker_status]
     action_tools = [assign_tasks]

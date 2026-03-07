@@ -27,6 +27,53 @@ def _uses_old_dynamics(mdp) -> bool:
     return bool(getattr(mdp, "old_dynamics", False))
 
 
+def _layout_recipe_context(mdp):
+    """Summarize available ingredients and the recipe constraints for the layout."""
+    available = []
+    if mdp.get_onion_dispenser_locations():
+        available.append("onion")
+    if mdp.get_tomato_dispenser_locations():
+        available.append("tomato")
+
+    orders = getattr(mdp, "start_all_orders", None) or []
+    recipe_strings = []
+    for order in orders:
+        ingredients = order.get("ingredients", []) if isinstance(order, dict) else []
+        if ingredients:
+            recipe_strings.append(", ".join(ingredients))
+
+    unique_recipes = sorted(set(recipe_strings))
+    onion_only_three = unique_recipes == ["onion, onion, onion"]
+    tomato_only_three = unique_recipes == ["tomato, tomato, tomato"]
+
+    if onion_only_three:
+        recipe_rule = (
+            "This layout only serves onion soup. You need exactly 3 onions in a pot "
+            "before cooking can start."
+        )
+    elif tomato_only_three:
+        recipe_rule = (
+            "This layout only serves tomato soup. You need exactly 3 tomatoes in a pot "
+            "before cooking can start."
+        )
+    elif unique_recipes:
+        recipe_rule = "Valid recipes on this layout: " + "; ".join(unique_recipes) + "."
+    else:
+        recipe_rule = "Use the current order list to determine the correct recipe."
+
+    if available:
+        available_rule = "Available ingredient dispensers: " + ", ".join(available) + "."
+    else:
+        available_rule = "No ingredient dispenser metadata found."
+
+    return {
+        "onion_only_three": onion_only_three,
+        "tomato_only_three": tomato_only_three,
+        "recipe_rule": recipe_rule,
+        "available_rule": available_rule,
+    }
+
+
 def serialize_state(mdp, state, agent_index, horizon=None):
     """Convert an OvercookedState to a text description for the LLM.
 
@@ -123,6 +170,7 @@ def _describe_held(player):
 def _serialize_pots(mdp, state):
     """Describe each pot's status."""
     pot_states = mdp.get_pot_states(state)
+    recipe_context = _layout_recipe_context(mdp)
     lines = ["POTS:"]
 
     if not mdp.get_pot_locations():
@@ -147,7 +195,17 @@ def _serialize_pots(mdp, state):
                         f"INTERACT with empty hands to start cooking."
                     )
                 else:
-                    lines.append(f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)})")
+                    needed = 3 - len(ingredients)
+                    if recipe_context["onion_only_three"]:
+                        need_text = f"Needs {needed} more onion(s) before cooking can start."
+                    elif recipe_context["tomato_only_three"]:
+                        need_text = f"Needs {needed} more tomato(es) before cooking can start."
+                    else:
+                        need_text = f"Needs {needed} more ingredient(s) before cooking can start."
+                    lines.append(
+                        f"  Pot at {pot_pos}: has {len(ingredients)}/3 ingredients ({', '.join(ingredients)}). "
+                        f"{need_text}"
+                    )
 
     return "\n".join(lines)
 
@@ -219,6 +277,7 @@ def build_system_prompt(mdp, agent_index, horizon=None):
     locations_str = "\n".join(locations) if locations else "  (none listed)"
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
+    recipe_context = _layout_recipe_context(mdp)
 
     if _uses_old_dynamics(mdp):
         soup_pipeline = (
@@ -242,6 +301,8 @@ def build_system_prompt(mdp, agent_index, horizon=None):
 
 GAME RULES:
 - Make soups by: {soup_pipeline}
+- {recipe_context["available_rule"]}
+- {recipe_context["recipe_rule"]}
 - CRITICAL: You can hold ONLY ONE ITEM at a time. Put something down before picking up anything else.
 - INTERACT action: picks up items, places items, starts cooking, serves soup. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
@@ -336,6 +397,7 @@ def build_planner_system_prompt(mdp, worker_ids, horizon=None):
     locations_str = "\n".join(locations) if locations else "  (none listed)"
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
+    recipe_context = _layout_recipe_context(mdp)
 
     # Format worker list
     workers_str = "\n".join(f"  - {wid}" for wid in worker_ids)
@@ -358,7 +420,7 @@ def build_planner_system_prompt(mdp, worker_ids, horizon=None):
             "assign a worker to start cooking via INTERACT."
         )
 
-        return """You are the PLANNER in the cooperative cooking game Overcooked. Coordinate multiple workers to make and deliver soups as efficiently as possible.
+        return f"""You are the PLANNER in the cooperative cooking game Overcooked. Coordinate multiple workers to make and deliver soups as efficiently as possible.
 
 1. Core Principles
 Your planning must always be guided by these three principles:
@@ -371,6 +433,9 @@ RULES:
 - INTERACT picks up or drops items; must face the target square.
 - Coordinates: (x,y), x increases right, y increases downward.
 - Do not collect soup from a pot unless it is READY.
+- {recipe_context["available_rule"]}
+- {recipe_context["recipe_rule"]}
+- Never assign "start cooking" unless the pot already contains the full required recipe.
 
 LAYOUT:
 {grid_str}
@@ -401,15 +466,11 @@ PRIORITY RULES:
 4. Minimize walking distance.
 5. Ensure each worker’s path is clear of obstacles and other workers.
 
-OUTPUT FORMAT:
-Respond ONLY with valid JSON:
-
-{
-  "worker_0": "short task description",
-  "worker_1": "short task description"
-}
-
-Do NOT include explanations, markdown, or text outside JSON.
+TOOL USAGE:
+- You must finish each planning turn by calling the `assign_tasks` tool.
+- Pass both workers in a single tool call whenever possible.
+- Use explicit short task strings for both workers, even if one worker should support or wait.
+- Do not reply with plain JSON or prose instead of using the tool.
 """
 
 
@@ -452,6 +513,7 @@ def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):
     locations_str = "\n".join(locations) if locations else "  (none listed)"
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
+    recipe_context = _layout_recipe_context(mdp)
 
     if _uses_old_dynamics(mdp):
         soup_pipeline = (
@@ -480,6 +542,8 @@ YOUR ROLE:
 
 GAME RULES:
 - Make soups by: {soup_pipeline}
+- {recipe_context["available_rule"]}
+- {recipe_context["recipe_rule"]}
 - CRITICAL: You can hold ONLY ONE ITEM at a time. You must put down what you're holding (on a counter or in a pot) before picking up something else.
 - INTERACT action: picks up items, places items, starts interactions. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
@@ -501,6 +565,7 @@ ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
 - To pick up a tomato: **stand adjacent to dispenser** and face it, then INTERACT immediately
 - To place ingredient in pot: **stand adjacent to pot** and face it, then INTERACT immediately
 - {cook_rule}
+- NEVER try to start cooking with only 1/3 or 2/3 ingredients in the pot.
 - If pot shows 3/3 ingredients but not READY and not COOKING: go to pot with empty hands and INTERACT to start cooking.
 - NEVER try to pick up soup unless pot status says READY.
 - To get soup from ready pot: pick up a dish first, then **stand adjacent to pot** and face it before INTERACT

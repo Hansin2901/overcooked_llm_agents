@@ -25,13 +25,10 @@ class Direction(object):
 
     @staticmethod
     def get_adjacent_directions(direction):
-        """Returns the directions within 90 degrees of the given direction.
-
-        direction: One of the Directions, except not Direction.STAY.
-        """
+        """Returns the directions within 90 degrees of the given direction."""
         if direction in [Direction.NORTH, Direction.SOUTH]:
             return [Direction.EAST, Direction.WEST]
-        elif direction in [Direction.EAST, Direction.WEST]:
+        if direction in [Direction.EAST, Direction.WEST]:
             return [Direction.NORTH, Direction.SOUTH]
         raise ValueError("Invalid direction: %s" % direction)
 
@@ -51,15 +48,15 @@ class Action(object):
         INTERACT,
     ]
     INDEX_TO_ACTION_INDEX_PAIRS = [
-        v for v in itertools.product(range(len(INDEX_TO_ACTION)), repeat=2)
+        value for value in itertools.product(range(len(INDEX_TO_ACTION)), repeat=2)
     ]
     ACTION_TO_INDEX = {a: i for i, a in enumerate(INDEX_TO_ACTION)}
     MOTION_ACTIONS = Direction.ALL_DIRECTIONS + [STAY]
     ACTION_TO_CHAR = {
-        Direction.NORTH: "↑",
-        Direction.SOUTH: "↓",
-        Direction.EAST: "→",
-        Direction.WEST: "←",
+        Direction.NORTH: "up",
+        Direction.SOUTH: "down",
+        Direction.EAST: "right",
+        Direction.WEST: "left",
         STAY: "stay",
         INTERACT: INTERACT,
     }
@@ -80,7 +77,7 @@ class Action(object):
 
     @staticmethod
     def determine_action_for_change_in_pos(old_pos, new_pos):
-        """Determines an action that will enable intended transition"""
+        """Determines an action that will enable intended transition."""
         if old_pos == new_pos:
             return Action.STAY
         new_x, new_y = new_pos
@@ -110,10 +107,9 @@ class Action(object):
                     probs[row_idx][idx] = eps
             norm_probs = probs.T / np.sum(probs, axis=1)
             return norm_probs.T
-        else:
-            for idx in indices:
-                probs[idx] = eps
-            return probs / sum(probs)
+        for idx in indices:
+            probs[idx] = eps
+        return probs / sum(probs)
 
     @staticmethod
     def to_char(action):

@@ -15,19 +15,7 @@ from overcooked_ai_py.agents.llm.tool_state import ToolState
 
 
 class Planner:
-    """Central planner that assigns tasks to worker agents.
-
-    NOT an Agent — it doesn't produce actions.
-    Shared by all WorkerAgents. Runs once per replan interval.
-
-    Args:
-        model_name: LiteLLM model string
-        replan_interval: Steps between replanning (default: 5)
-        debug: Print planner reasoning
-        horizon: Total episode horizon
-        api_base: Custom API endpoint
-        api_key: Custom API key
-    """
+    """Central planner that assigns tasks to worker agents."""
 
     def __init__(
         self,
@@ -49,35 +37,21 @@ class Planner:
         self.observability = observability
         self.invoke_config = dict(invoke_config or {})
 
-        self._tool_state = ToolState()  # Planner's own ToolState
+        self._tool_state = ToolState()
         self._graph = None
         self._system_prompt = None
         self._worker_registry: dict[str, ToolState] = {}
-        self._last_plan_step = -1  # Timestep of last planning
-        self._history_size = 5  # how many recent timesteps to summarize
+        self._last_plan_step = -1
+        self._history_size = 5
 
     def register_worker(self, worker_id: str, worker_tool_state: ToolState):
-        """Register a worker. Called during setup.
-
-        Args:
-            worker_id: Unique identifier for the worker (e.g., "worker_0")
-            worker_tool_state: The worker's ToolState instance
-        """
         self._worker_registry[worker_id] = worker_tool_state
 
     def init(self, mdp, motion_planner):
-        """Initialize planner after all workers are registered.
-
-        Args:
-            mdp: OvercookedGridworld instance
-            motion_planner: MotionPlanner for distance calculations
-        """
         self._tool_state.init(mdp, motion_planner)
 
         worker_ids = list(self._worker_registry.keys())
-        self._system_prompt = build_planner_system_prompt(
-            mdp, worker_ids, self.horizon
-        )
+        self._system_prompt = build_planner_system_prompt(mdp, worker_ids, self.horizon)
 
         obs_tools, act_tools, act_names = create_planner_tools(
             self._tool_state, self._worker_registry
@@ -113,184 +87,120 @@ class Planner:
                 print(f"  [Planner] observability emit failed: {exc}")
 
     def _tasks_assigned(self) -> Optional[bool]:
-        """Check if planner has assigned tasks (termination condition).
-
-        Returns:
-            True if any worker has a fresh task (steps_active == 0)
-            None otherwise
-        """
-        for wid, ts in self._worker_registry.items():
-            if ts.current_task and ts.current_task.steps_active == 0:
+        for tool_state in self._worker_registry.values():
+            if tool_state.current_task and tool_state.current_task.steps_active == 0:
                 return True
         return None
 
     def should_replan(self, state) -> bool:
-        """Check if replanning is needed.
-
-        Args:
-            state: Current OvercookedState
-
-        Returns:
-            True if replanning should occur, False otherwise
-        """
-        # Don't replan twice in the same timestep
         if self._last_plan_step == state.timestep:
             return False
-
-        # First step - always plan
         if self._last_plan_step < 0:
             return True
-
-        # Check if interval has elapsed
-        steps_since = state.timestep - self._last_plan_step
-        if steps_since >= self.replan_interval:
+        if state.timestep - self._last_plan_step >= self.replan_interval:
             return True
-
-        # Check if any worker is without a task or has completed
-        for wid, ts in self._worker_registry.items():
-            if ts.current_task is None or ts.current_task.completed:
+        for tool_state in self._worker_registry.values():
+            if tool_state.current_task is None or tool_state.current_task.completed:
                 return True
-
         return False
 
-    def maybe_replan(self, state):
-        """Run planner if needed. Called by first worker each step.
+    def _build_status_text(self) -> str:
+        lines = []
+        for worker_id, tool_state in self._worker_registry.items():
+            status = tool_state.get_status()
+            if status["status"] == "idle":
+                lines.append(f"  {worker_id} (Player {worker_id[-1]}): idle")
+            else:
+                lines.append(
+                    f"  {worker_id} (Player {worker_id[-1]}): {status['status']} - "
+                    f"{status['task']} (active for {status['steps_active']} steps)"
+                )
+        return "\n".join(lines) if lines else "  (none)"
 
-        Args:
-            state: Current OvercookedState
-        """
+    def _build_history_block(self) -> str:
+        all_timesteps = set()
+        for tool_state in self._worker_registry.values():
+            for entry in tool_state.history:
+                timestep = entry.get("timestep")
+                if timestep is not None:
+                    all_timesteps.add(int(timestep))
+
+        if not all_timesteps:
+            return ""
+
+        lines = ["Recent worker history:"]
+        for timestep in sorted(all_timesteps)[-self._history_size :]:
+            step_parts = []
+            for worker_id, tool_state in self._worker_registry.items():
+                entries = [
+                    entry
+                    for entry in tool_state.history
+                    if int(entry.get("timestep", -1)) == timestep
+                ]
+                if not entries:
+                    continue
+                entry = entries[-1]
+                step_parts.append(
+                    f"{worker_id}: action={entry.get('action', '?')}, "
+                    f"task={entry.get('task') or 'none'}"
+                )
+            if step_parts:
+                lines.append(f"  Step {timestep}: " + " | ".join(step_parts))
+        return "\n".join(lines) + "\n\n"
+
+    def maybe_replan(self, state):
+        """Run planner if needed. Called by the first worker each step."""
         if not self.should_replan(state):
             return
 
-        # Serialize state for the planner (use agent_index=0 for full view)
-        state_text = serialize_state(self._tool_state.mdp, state, 0, self.horizon)
-        self._tool_state.set_state(state, 0)
-
-        # Include worker statuses
-        statuses = []
-        for wid, ts in self._worker_registry.items():
-            status_dict = ts.get_status()
-            if status_dict["status"] == "idle":
-                statuses.append(f"  {wid} (Player {wid[-1]}): idle")
-            else:
-                statuses.append(
-                    f"  {wid} (Player {wid[-1]}): {status_dict['status']} - "
-                    f"{status_dict['task']} (active for {status_dict['steps_active']} steps)"
-                )
-        status_text = "\n".join(statuses)
-
-        # Build short recent step history from worker ToolState histories
-        step_history_lines = []
-        all_timesteps = set()
-        for ts in self._worker_registry.values():
-            for entry in getattr(ts, "history", []) or []:
-                t = entry.get("timestep")
-                if t is not None:
-                    all_timesteps.add(int(t))
-
-        if all_timesteps:
-            recent_ts = sorted(all_timesteps)[-self._history_size :]
-            step_history_lines.append("Recent step history (up to last 5 steps):")
-            for t in recent_ts:
-                step_line_parts = []
-                for wid, ts in self._worker_registry.items():
-                    # find latest entry for this timestep for this worker
-                    entries = [e for e in getattr(ts, "history", []) or [] if int(e.get("timestep", -1)) == t]
-                    if not entries:
-                        continue
-                    e = entries[-1]
-                    action = e.get("action", "?")
-                    task_desc = e.get("task") or "no task"
-                    step_line_parts.append(f"{wid}: action={action}, task={task_desc!r}")
-                if step_line_parts:
-                    step_history_lines.append(f"  Step {t}: " + " | ".join(step_line_parts))
-
-        history_block = ""
-        if step_history_lines:
-            history_block = "\n".join(step_history_lines) + "\n\n"
-
-        # prompt = (
-        #     f"{history_block}"
-        #     f"Worker statuses:\n{status_text}\n\n"
-        #     f"Current game state:\n{state_text}\n\n"
-        #     "Use the recent step history to avoid repeating unproductive behavior and to continue from what has already been accomplished.\n"
-        #     "Assign short, complementary tasks to your workers based on the current state and recent step history."
-        # )
-
-        prompt = (
-            # f"HISTORY {history_block}"
-            f"Worker statuses:\n{status_text}\n\n"
-            f"Current game state:\n{state_text}\n\n"
-        )
-
-
-        messages = [
-            SystemMessage(content=self._system_prompt),
-            HumanMessage(content=prompt),
-        ]
-
-        # Invoke with recursion limit to prevent infinite loops
-        # Planner may need more steps for complex reasoning
-        if self.debug:
-            print(f"  [Planner] Invoking graph (step {state.timestep})...")
-
         try:
-            # Serialize state for the planner (use agent_index=0 for full view)
-            state_text = serialize_state(self._tool_state.mdp, state, 0, self.horizon)
-            self._tool_state.set_state(state, 0)
+            if self.observability is not None:
+                try:
+                    self.observability.start_role("planner")
+                except Exception:
+                    pass
 
-            # Include worker statuses
-            statuses = []
-            for wid, ts in self._worker_registry.items():
-                status_dict = ts.get_status()
-                if status_dict["status"] == "idle":
-                    statuses.append(f"  {wid} (Player {wid[-1]}): idle")
-                else:
-                    statuses.append(
-                        f"  {wid} (Player {wid[-1]}): {status_dict['status']} - "
-                        f"{status_dict['task']} (active for {status_dict['steps_active']} steps)"
-                    )
-            status_text = "\n".join(statuses)
+            self._tool_state.set_state(state, 0)
+            state_text = serialize_state(self._tool_state.mdp, state, 0, self.horizon)
+            status_text = self._build_status_text()
+            history_block = self._build_history_block()
 
             prompt = (
+                f"{history_block}"
                 f"Worker statuses:\n{status_text}\n\n"
                 f"Current game state:\n{state_text}\n\n"
-                f"Assign tasks to your workers."
+                "Assign complementary tasks for both workers. Finish by calling the "
+                "assign_tasks tool with both worker_0 and worker_1."
             )
-
             messages = [
                 SystemMessage(content=self._system_prompt),
                 HumanMessage(content=prompt),
             ]
 
-            # Invoke with recursion limit to prevent infinite loops
-            # Planner may need more steps for complex reasoning
             if self.debug:
                 print(f"  [Planner] Invoking graph (step {state.timestep})...")
 
             try:
                 invoke_config = {**self.invoke_config, "recursion_limit": 20}
                 try:
-                    self._graph.invoke(
-                        {"messages": messages},
-                        config=invoke_config,
-                    )
-                except TypeError as e:
-                    # Unit tests may stub invoke(messages) without config support.
-                    if "config" in str(e) or "unexpected keyword argument" in str(e):
+                    self._graph.invoke({"messages": messages}, config=invoke_config)
+                except TypeError as exc:
+                    if "config" in str(exc) or "unexpected keyword argument" in str(exc):
                         self._graph.invoke({"messages": messages})
                     else:
                         raise
                 if self.debug:
-                    print(f"  [Planner] Graph completed")
-            except Exception as e:
+                    print("  [Planner] Graph completed")
+            except Exception as exc:
                 if self.debug:
-                    print(f"  [Planner] Graph error: {e}")
+                    print(f"  [Planner] Graph error: {exc}")
 
             self._last_plan_step = state.timestep
             assignments = {
-                wid: (ts.current_task.description if ts.current_task else None)
-                for wid, ts in self._worker_registry.items()
+                worker_id: (
+                    tool_state.current_task.description if tool_state.current_task else None
+                )
+                for worker_id, tool_state in self._worker_registry.items()
             }
             self._safe_emit(
                 "planner.assignment",
@@ -300,9 +210,9 @@ class Planner:
             )
 
             if self.debug:
-                for wid, ts in self._worker_registry.items():
-                    if ts.current_task:
-                        print(f"  [Planner] → {wid}: {ts.current_task.description}")
+                for worker_id, tool_state in self._worker_registry.items():
+                    task = tool_state.current_task.description if tool_state.current_task else "NO TASK"
+                    print(f"  [Planner] -> {worker_id}: {task}")
         finally:
             if self.observability is not None:
                 try:
@@ -311,26 +221,12 @@ class Planner:
                     pass
 
     def get_task(self, worker_id: str) -> Optional[Task]:
-        """Get a worker's current task. Workers call this to read their own task only.
-
-        Args:
-            worker_id: The worker identifier
-
-        Returns:
-            The worker's current task, or None if no task or unknown worker
-        """
-        ts = self._worker_registry.get(worker_id)
-        if ts is None:
+        tool_state = self._worker_registry.get(worker_id)
+        if tool_state is None:
             return None
-        return ts.current_task
+        return tool_state.current_task
 
     def reset(self):
-        """Reset planner state for a new episode.
-
-        Note: Worker registry is NOT cleared - workers persist across episodes
-        and are registered once during setup via set_mdp().
-        """
         self._tool_state.reset()
         self._graph = None
         self._last_plan_step = -1
-        # Do NOT clear worker registry - workers persist across episodes

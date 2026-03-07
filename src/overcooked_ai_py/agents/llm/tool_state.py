@@ -14,6 +14,7 @@ class ToolState:
         self.motion_planner = None
         self.chosen_action = None
         self.current_task: Optional[Task] = None
+        self.history = []
 
     def init(self, mdp, motion_planner):
         self.mdp = mdp
@@ -30,6 +31,17 @@ class ToolState:
     def set_task(self, task: Task):
         self.current_task = task
 
+    def record_step(self, timestep, action, task=None):
+        self.history.append(
+            {
+                "timestep": int(timestep),
+                "action": action,
+                "task": task,
+            }
+        )
+        if len(self.history) > 20:
+            self.history = self.history[-20:]
+
     def get_status(self) -> dict:
         """Return status for planner to query."""
         if self.current_task is None:
@@ -45,3 +57,4 @@ class ToolState:
         self.agent_index = None
         self.chosen_action = None
         self.current_task = None
+        self.history = []

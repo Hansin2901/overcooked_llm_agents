@@ -7,6 +7,7 @@ This ensures workers cannot access each other's state.
 import numpy as np
 from langchain_core.tools import tool
 
+from overcooked_ai_py.agents.llm.state_serializer import _layout_recipe_context
 from overcooked_ai_py.agents.llm.tool_state import ToolState
 from overcooked_ai_py.mdp.actions import Action, Direction
 
@@ -74,6 +75,7 @@ def create_worker_tools(tool_state: ToolState) -> tuple:
     def get_pot_details() -> str:
         """Get detailed status of all pots: ingredients list, cooking timer, ready flag."""
         pot_states = tool_state.mdp.get_pot_states(tool_state.state)
+        recipe_context = _layout_recipe_context(tool_state.mdp)
         lines = []
         for pot_pos in tool_state.mdp.get_pot_locations():
             if pot_pos in pot_states.get("empty", []):
@@ -93,7 +95,17 @@ def create_worker_tools(tool_state: ToolState) -> tuple:
                             f"A worker with empty hands must INTERACT to start cooking."
                         )
                     else:
-                        lines.append(f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients ({', '.join(ingredients)}). Needs {3 - len(ingredients)} more.")
+                        needed = 3 - len(ingredients)
+                        if recipe_context["onion_only_three"]:
+                            need_text = f"Needs {needed} more onion(s)."
+                        elif recipe_context["tomato_only_three"]:
+                            need_text = f"Needs {needed} more tomato(es)."
+                        else:
+                            need_text = f"Needs {needed} more ingredient(s)."
+                        lines.append(
+                            f"Pot at {pot_pos}: {len(ingredients)}/3 ingredients "
+                            f"({', '.join(ingredients)}). {need_text}"
+                        )
         if not lines:
             return "No pots found."
         return "\n".join(lines)
