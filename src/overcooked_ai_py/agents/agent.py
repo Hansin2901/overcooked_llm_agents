@@ -9,6 +9,7 @@ import numpy as np
 from overcooked_ai_py.mdp.actions import Action
 from overcooked_ai_py.mdp.overcooked_mdp import Recipe
 from overcooked_ai_py.utils import OvercookedException
+from concurrent.futures import ThreadPoolExecutor
 
 
 class Agent(object):
