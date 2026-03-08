@@ -1,0 +1,8 @@
+layout_name: forced_coordination
+model_name: openai/moonshotai.kimi-k2.5
+horizon: 10
+debug: false
+visualize: false
+fps: 2
+agent_type: planner-worker
+replan_interval: 5

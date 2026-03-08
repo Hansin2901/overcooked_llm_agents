@@ -1,0 +1,8 @@
+layout_name: forced_coordination
+model_name: openai/mistral.mistral-large-3-675b-instruct
+horizon: 400
+debug: false
+visualize: false
+fps: 2
+agent_type: planner-worker
+replan_interval: 5

@@ -1,0 +1,8 @@
+layout_name: coordination_ring
+model_name: openai/moonshotai.kimi-k2.5
+horizon: 400
+debug: false
+visualize: false
+fps: 2
+agent_type: planner-worker
+replan_interval: 5
