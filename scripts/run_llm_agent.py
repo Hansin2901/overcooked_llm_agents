@@ -285,6 +285,11 @@ def main():
     print()
     print(f"Episode finished in {step} steps ({elapsed:.1f}s)")
     print(f"Total reward: {total_reward}")
+    print(f"Total LLM calls: {hub.llm_call_count}")
+    print(f"Total input tokens: {hub.total_input_tokens}")
+    print(f"Total output tokens: {hub.total_output_tokens}")
+    print(f"Total tokens (input+output): {hub.total_tokens}")
+    print(f"Total estimated LLM cost: ${hub.total_estimated_cost_usd:.6f}")
     print(f"Average time per step: {elapsed / max(step, 1):.2f}s")
 
 

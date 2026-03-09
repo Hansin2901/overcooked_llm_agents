@@ -436,6 +436,11 @@ class ObservabilityHub:
         self.file_logger = file_logger
         self.langfuse = langfuse
         self._current_step: int | None = None
+        self.llm_call_count = 0
+        self.total_estimated_cost_usd = 0.0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_tokens = 0
 
     def build_invoke_config(self, base_config: dict | None) -> dict:
         if self.langfuse is None:
@@ -454,6 +459,29 @@ class ObservabilityHub:
         step: int | None = None,
         agent_role: str = "runner",
     ) -> None:
+        if event_type == "llm.generation":
+            self.llm_call_count += 1
+
+            prompt_tokens = _coerce_int(payload.get("prompt_tokens"))
+            completion_tokens = _coerce_int(payload.get("completion_tokens"))
+            total_tokens = _coerce_int(payload.get("total_tokens"))
+
+            if prompt_tokens is not None:
+                self.total_input_tokens += prompt_tokens
+            if completion_tokens is not None:
+                self.total_output_tokens += completion_tokens
+
+            if total_tokens is not None:
+                self.total_tokens += total_tokens
+            elif prompt_tokens is not None and completion_tokens is not None:
+                self.total_tokens += prompt_tokens + completion_tokens
+
+            estimated_cost = payload.get("estimated_cost_usd")
+            if estimated_cost is not None:
+                try:
+                    self.total_estimated_cost_usd += float(estimated_cost)
+                except (TypeError, ValueError):
+                    pass
         effective_step = self._current_step if step is None else step
         self.file_logger.emit(
             event_type,
