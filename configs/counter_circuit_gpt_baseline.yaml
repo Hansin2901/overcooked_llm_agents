@@ -1,0 +1,8 @@
+layout_name: counter_circuit
+model_name: openai/api-gpt-oss-120b
+horizon: 400
+debug: false
+visualize: false
+fps: 2
+agent_type: llm
+replan_interval: 5
