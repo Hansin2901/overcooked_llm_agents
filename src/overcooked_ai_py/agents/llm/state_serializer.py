@@ -1,6 +1,8 @@
 """Serialize OvercookedState into concise text for LLM consumption."""
 
-from overcooked_ai_py.mdp.actions import Direction
+from collections import deque
+
+from overcooked_ai_py.mdp.actions import Action, Direction
 
 
 # Map terrain chars to human-readable names
@@ -72,6 +74,169 @@ def _layout_recipe_context(mdp):
         "recipe_rule": recipe_rule,
         "available_rule": available_rule,
     }
+
+
+def _shortest_position_distances(mdp, start_pos):
+    """Compute shortest grid distances from a start position to all valid floor tiles."""
+    valid_positions = set(mdp.get_valid_player_positions())
+    queue = deque([(start_pos, 0)])
+    distances = {start_pos: 0}
+
+    while queue:
+        pos, steps = queue.popleft()
+        for direction in Direction.ALL_DIRECTIONS:
+            nxt = Action.move_in_direction(pos, direction)
+            if nxt in valid_positions and nxt not in distances:
+                distances[nxt] = steps + 1
+                queue.append((nxt, steps + 1))
+
+    return distances
+
+
+def _reachable_feature_distances(distance_map, feature_pos):
+    """Return the shortest step count to stand adjacent to a terrain feature."""
+    reachable = []
+    for direction in Direction.ALL_DIRECTIONS:
+        adj = Action.move_in_direction(feature_pos, direction)
+        if adj in distance_map:
+            reachable.append(distance_map[adj])
+    return min(reachable) if reachable else None
+
+
+def _format_feature_summary(label, reachable_features):
+    """Summarize the nearest reachable terrain feature."""
+    if not reachable_features:
+        return f"cannot reach any {label}"
+    pos, steps = reachable_features[0]
+    return f"closest {label} {pos} in {steps} step(s)"
+
+
+def _format_positions(positions):
+    """Format a list of positions as a short string."""
+    if not positions:
+        return "none"
+    return ", ".join(str(pos) for pos in positions)
+
+
+def _shared_handoff_counters(mdp, distance_maps):
+    """Return counters that both players can stand adjacent to."""
+    shared = []
+    for counter_pos in mdp.get_counter_locations():
+        if all(
+            _reachable_feature_distances(distance_map, counter_pos) is not None
+            for distance_map in distance_maps
+        ):
+            shared.append(counter_pos)
+    return shared
+
+
+def _layout_strategy_context(mdp):
+    """Build layout-aware coordination guidance for prompts."""
+    feature_getters = {
+        "onion dispensers": mdp.get_onion_dispenser_locations(),
+        "tomato dispensers": mdp.get_tomato_dispenser_locations(),
+        "dish dispensers": mdp.get_dish_dispenser_locations(),
+        "pots": mdp.get_pot_locations(),
+        "serving locations": mdp.get_serving_locations(),
+    }
+
+    distance_maps = [
+        _shortest_position_distances(mdp, start_pos)
+        for start_pos in mdp.start_player_positions
+    ]
+
+    access = []
+    for distance_map in distance_maps:
+        player_access = {}
+        for label, positions in feature_getters.items():
+            reachable = []
+            for pos in positions:
+                steps = _reachable_feature_distances(distance_map, pos)
+                if steps is not None:
+                    reachable.append((pos, steps))
+            player_access[label] = sorted(reachable, key=lambda item: item[1])
+        access.append(player_access)
+
+    lines = [f"Layout name: {mdp.layout_name}."]
+    for idx, start_pos in enumerate(mdp.start_player_positions):
+        summaries = [
+            _format_feature_summary("onion dispenser", access[idx]["onion dispensers"]),
+            _format_feature_summary("dish dispenser", access[idx]["dish dispensers"]),
+            _format_feature_summary("pot", access[idx]["pots"]),
+            _format_feature_summary("serving location", access[idx]["serving locations"]),
+        ]
+        if feature_getters["tomato dispensers"]:
+            summaries.insert(
+                1,
+                _format_feature_summary("tomato dispenser", access[idx]["tomato dispensers"]),
+            )
+        lines.append(f"Player {idx} starts at {start_pos}: " + "; ".join(summaries) + ".")
+
+    layout_name = getattr(mdp, "layout_name", "")
+    if layout_name == "cramped_room":
+        lines.extend(
+            [
+                "This is a tight single-room layout with one shared pot, one dish dispenser, and frequent body blocking in the center.",
+                "Player 0 starts on the dish-side and Player 1 starts on the pot-and-serving side.",
+                "Preferred split: keep one worker focused on pot filling and cooking while the other supports without blocking the center lane.",
+                "Important sequencing rule for this layout: do NOT pick up a dish early while the pot still needs onions. First fill the pot and start cooking, then fetch exactly one dish when the soup is cooking or nearly ready.",
+                "Do not leave a worker holding a dish and waiting for many steps. If soup is not yet cooking, that worker should help clear space, position for the next handoff, or contribute to the ingredient pipeline.",
+                "Until the pot reaches 3/3 ingredients, both workers should usually contribute directly to the onion pipeline unless one must briefly move aside to avoid blocking.",
+                "Do not assign vague wait/support tasks in cramped_room while the pot still needs ingredients. Only use a one-step repositioning move if it immediately helps unblock the other worker.",
+                "Do not tell a worker to drop an onion on a floor tile or random counter in cramped_room. Onions should normally go directly from dispenser to pot.",
+                "Once the pot is full, assign exactly one worker to start cooking and exactly one worker to fetch the next needed dish. Do not have both workers wait at the pot.",
+            ]
+        )
+    elif layout_name == "asymmetric_advantages":
+        left_onion = _format_positions([pos for pos, _ in access[1]["onion dispensers"]])
+        right_onion = _format_positions([pos for pos, _ in access[0]["onion dispensers"]])
+        left_dish = _format_positions([pos for pos, _ in access[1]["dish dispensers"]])
+        right_dish = _format_positions([pos for pos, _ in access[0]["dish dispensers"]])
+        left_serve = _format_positions([pos for pos, _ in access[1]["serving locations"]])
+        right_serve = _format_positions([pos for pos, _ in access[0]["serving locations"]])
+        lines.extend(
+            [
+                "This map is split into left and right support zones around shared central pots.",
+                f"Player 0 is effectively the right-side worker: onion {right_onion}, dish {right_dish}, serving {right_serve}.",
+                f"Player 1 is effectively the left-side worker: onion {left_onion}, dish {left_dish}, serving {left_serve}.",
+                "Use the two pots as the coordination point. Each worker should usually source ingredients, dishes, and deliveries from their own side instead of crossing through the middle.",
+            ]
+        )
+    elif layout_name == "coordination_ring":
+        lines.extend(
+            [
+                "This layout is a loop around a central blocker. Head-on traffic on the same arc wastes time.",
+                "Player 0 starts nearest the pots. Player 1 starts nearest the onions, dish dispenser, and serving side.",
+                "Use a ring pipeline: Player 1 should usually feed onions and dishes from the lower-left side while Player 0 manages pot-side cooking work near the upper-right side.",
+                "Avoid sending both workers around the same segment of the ring unless a soup is ready and must be served immediately.",
+            ]
+        )
+    elif layout_name == "forced_coordination":
+        shared_counters = _shared_handoff_counters(mdp, distance_maps)
+        lines.extend(
+            [
+                "This layout is intentionally split. Player 0 on the right cannot reach onions or dishes. Player 1 on the left cannot reach pots or serving.",
+                f"The shared handoff counters are { _format_positions(shared_counters) }.",
+                "Required strategy: Player 1 gathers onions and dishes and stages them on the shared counters. Player 0 picks from those counters, fills pots, starts cooking, picks up soup, and serves.",
+                "Do not assign solo soup cycles here. The map requires explicit handoffs.",
+            ]
+        )
+    elif layout_name == "counter_circuit":
+        lines.extend(
+            [
+                "This layout is a long circuit around a central counter island. Travel distance is the main cost.",
+                "Player 0 starts on the ingredient-and-serving side. Player 1 starts on the dish-and-pot side.",
+                "This layout is not onion-only: both onion and tomato dispensers exist, and the current orders can require mixed recipes.",
+                "Preferred split: Player 0 feeds needed ingredients and can finish nearby deliveries, while Player 1 manages dish pickup, pot interactions, cooking starts, and soup collection on the top side.",
+                "Use counters for staging and pipeline work. Do not send both workers on long laps unless the order state truly requires it.",
+            ]
+        )
+    else:
+        lines.append(
+            "Use the closest-worker principle, respect any exclusive station access, and prefer complementary roles over duplicate movement."
+        )
+
+    return "\n".join(f"- {line}" for line in lines)
 
 
 def serialize_state(mdp, state, agent_index, horizon=None):
@@ -278,6 +443,7 @@ def build_system_prompt(mdp, agent_index, horizon=None):
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
     recipe_context = _layout_recipe_context(mdp)
+    layout_context = _layout_strategy_context(mdp)
 
     if _uses_old_dynamics(mdp):
         soup_pipeline = (
@@ -307,6 +473,9 @@ GAME RULES:
 - INTERACT action: picks up items, places items, starts cooking, serves soup. You must be FACING the target square.
 - To face a direction, move in that direction (even if blocked, your orientation updates).
 - Coordinates are (x, y) where x increases rightward, y increases downward.{horizon_str}
+
+LAYOUT-SPECIFIC GUIDANCE:
+{layout_context}
 
 ADJACENCY & INTERACT RULES (FOLLOW THESE EXACTLY):
 - Compute Manhattan distance: |your_x - target_x| + |your_y - target_y|.
@@ -398,6 +567,7 @@ def build_planner_system_prompt(mdp, worker_ids, horizon=None):
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
     recipe_context = _layout_recipe_context(mdp)
+    layout_context = _layout_strategy_context(mdp)
 
     # Format worker list
     workers_str = "\n".join(f"  - {wid}" for wid in worker_ids)
@@ -447,24 +617,33 @@ KEY LOCATIONS:
 WORKERS:
 {workers_str}
 
-ROLE ASSIGNMENT:
-- Worker 0 → Primary ingredient gatherer and pot filler.
-- Worker 1 → Plate prep, delivery, and support for pot or ingredients.
-- Roles remain consistent until tasks are completed or the environment changes.
+COORDINATION POLICY:
+- Replace any generic role split with the layout-specific guidance below.
+
+LAYOUT-SPECIFIC GUIDANCE:
+{layout_context}
 
 TASK GUIDELINES:
 - Assign atomic tasks with explicit coordinates: e.g., "Go to onion dispenser at (2,1), pick onion, deliver to pot at (3,2)".
+- Follow the layout-specific guidance above. If a worker cannot realistically reach a station on this layout, do not assign that task to them.
 - Plan multi-step paths to targets, considering counters, obstacles, and the other worker's position.
 - Reassign tasks dynamically if items, pots, or paths change.
 - Pipeline tasks: prepare next soup while current soup cooks.
+- Do not assign early dish pickup before a soup is cooking or nearly ready unless there is a concrete immediate reason.
+- Do not assign a worker to hold a dish and idle while the current pot still needs ingredients.
+- Do not assign `wait`, `stay ready`, or generic support tasks if a worker can instead fetch an ingredient, place an ingredient, start cooking, fetch a needed dish, or serve a ready soup.
+- Do not assign vague counter-drop tasks unless the layout truly requires handoff counters. If the layout does not require a handoff, ingredients should usually go directly into the pot.
+- If a worker is already holding a useful item, assign the next task so that worker finishes delivering or using that item instead of abandoning it.
+- Prefer assigning path-clearing or repositioning moves to the worker who is not already carrying the critical item.
 - Avoid idle time, overlapping paths, and collisions.
 
 PRIORITY RULES:
 1. If a soup is ready first complete delivery before doing anything else.
 2. Keep pots cooking whenever possible.
-3. While soup is cooking, one worker gathers/preps ingredients, the other preps plates and serves.
-4. Minimize walking distance.
-5. Ensure each worker’s path is clear of obstacles and other workers.
+3. Before a pot starts cooking, prioritize finishing the ingredient pipeline over staging dishes too early.
+4. While soup is cooking, assign complementary prep tasks that fit the layout-specific access pattern.
+5. Minimize walking distance.
+6. Ensure each worker’s path is clear of obstacles and other workers.
 
 TOOL USAGE:
 - You must finish each planning turn by calling the `assign_tasks` tool.
@@ -514,6 +693,7 @@ def build_worker_system_prompt(mdp, agent_index, worker_id, horizon=None):
 
     horizon_str = f"\nThe episode lasts {horizon} timesteps." if horizon else ""
     recipe_context = _layout_recipe_context(mdp)
+    layout_context = _layout_strategy_context(mdp)
 
     if _uses_old_dynamics(mdp):
         soup_pipeline = (
@@ -556,6 +736,9 @@ Legend: X=counter, O=onion_disp, T=tomato_disp, D=dish_disp, S=serving, P=pot, '
 KEY LOCATIONS:
 {locations_str}
 
+LAYOUT-SPECIFIC GUIDANCE:
+{layout_context}
+
 ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
 - **ADJACENT means your position differs by exactly 1 in X OR Y coordinate (not both)**
   - Example: You at (1,1), target at (0,1) → ADJACENT (X differs by 1)
@@ -565,6 +748,7 @@ ACTION GUIDE - ALWAYS CHECK IF YOU'RE ALREADY ADJACENT FIRST:
 - To pick up a tomato: **stand adjacent to dispenser** and face it, then INTERACT immediately
 - To place ingredient in pot: **stand adjacent to pot** and face it, then INTERACT immediately
 - {cook_rule}
+- Follow the layout-specific guidance above. If it says your side cannot reach a station, do not keep attempting that route.
 - NEVER try to start cooking with only 1/3 or 2/3 ingredients in the pot.
 - If pot shows 3/3 ingredients but not READY and not COOKING: go to pot with empty hands and INTERACT to start cooking.
 - NEVER try to pick up soup unless pot status says READY.
@@ -599,5 +783,15 @@ WORKFLOW FOR EACH TURN:
 3. **Plan your action** - Based on observations, decide the best move
 4. **Execute ONE action** - Call exactly one action tool (move or interact)
 5. **IMPORTANT**: If you tried to move but your position didn't change, you're BLOCKED! Try a different direction or route.
+
+TASK FOLLOWING RULES:
+- Follow the task from your CURRENT state, not from the beginning of the sentence every turn.
+- If you already hold the needed item, skip the pickup part and continue to the delivery/dropoff part.
+- If you already completed the pickup and dropoff, only continue to the next clause if it still matches the current state.
+- Do not restart the task from the first clause after each step.
+- If you are holding an onion and your task is to deliver to a pot, prioritize reaching the pot. Do not wander back toward the dispenser.
+- If you are holding a dish and your task is to get soup from a ready pot, go straight toward the pot. Do not go back to the dish dispenser.
+- If another worker is briefly blocking you, make one sensible sidestep and then continue the same task.
+- Do not choose STAY unless you are truly waiting on cooking, waiting because the task explicitly says to wait, or every productive move is blocked.
 
 Each turn you receive the current game state and your assigned task. Use observation tools first, then call exactly one action tool to make your move."""

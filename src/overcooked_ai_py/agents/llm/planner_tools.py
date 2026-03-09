@@ -6,6 +6,7 @@ plus read-only observation tools. The planner receives the worker_registry
 """
 
 import json
+import re
 
 import numpy as np
 from langchain_core.tools import tool
@@ -179,6 +180,131 @@ def create_planner_tools(
             return f"Error: Unknown worker_id '{worker_id}'. Valid workers: {valid_workers}"
         return json.dumps(worker_registry[worker_id].get_status())
 
+    def _extract_pot_target(description: str):
+        match = re.search(r"pot at\s*\((\d+)\s*,\s*(\d+)\)", description, re.IGNORECASE)
+        if match:
+            return (int(match.group(1)), int(match.group(2)))
+        return None
+
+    def _extract_coords(description: str):
+        return [
+            (int(match.group(1)), int(match.group(2)))
+            for match in re.finditer(r"\((\d+)\s*,\s*(\d+)\)", description)
+        ]
+
+    def _terrain_at(pos):
+        if pos is None:
+            return None
+        x, y = pos
+        if 0 <= x < planner_tool_state.mdp.width and 0 <= y < planner_tool_state.mdp.height:
+            return planner_tool_state.mdp.terrain_mtx[y][x]
+        return None
+
+    def _first_coord_with_terrain(coords, terrain_chars):
+        for pos in coords:
+            if _terrain_at(pos) in terrain_chars:
+                return pos
+        return None
+
+    def _extract_serving_target(description: str):
+        match = re.search(
+            r"serv(?:e|ing)(?: location)? at\s*\((\d+)\s*,\s*(\d+)\)",
+            description,
+            re.IGNORECASE,
+        )
+        if match:
+            return (int(match.group(1)), int(match.group(2)))
+        return None
+
+    def _looks_like_raw_action_script(description: str) -> bool:
+        lower = description.lower().strip()
+        semantic_markers = [
+            "dispenser",
+            "pot",
+            "serving",
+            "serve",
+            "dish",
+            "onion",
+            "tomato",
+            "soup",
+            "counter",
+        ]
+        if any(marker in lower for marker in semantic_markers):
+            return False
+
+        primitive_tokens = re.findall(
+            r"\b(left|right|up|down|interact|stay|wait|move)\b",
+            lower,
+        )
+        return bool(primitive_tokens)
+
+    def _canonicalize_assignment(description: str) -> str | None:
+        lower = description.lower().strip()
+        coords = _extract_coords(description)
+        pot_pos = _extract_pot_target(description) or _first_coord_with_terrain(coords, {"P"})
+        serving_pos = _extract_serving_target(description) or _first_coord_with_terrain(coords, {"S"})
+        onion_disp = _first_coord_with_terrain(coords, {"O"})
+        tomato_disp = _first_coord_with_terrain(coords, {"T"})
+        dish_disp = _first_coord_with_terrain(coords, {"D"})
+
+        if _looks_like_raw_action_script(description):
+            return None
+
+        if "start cooking" in lower:
+            if pot_pos is None:
+                return None
+            return f"Go to pot at {pot_pos}, interact to start cooking"
+
+        if "pick dish" in lower or "dish dispenser" in lower:
+            if dish_disp is None:
+                return None
+            return f"Go to dish dispenser at {dish_disp}, pick dish"
+
+        if "serve" in lower and pot_pos is not None and serving_pos is not None:
+            return (
+                f"Go to pot at {pot_pos}, collect soup with dish, "
+                f"deliver to serving at {serving_pos}"
+            )
+
+        if "pick onion" in lower or "onion dispenser" in lower:
+            if onion_disp is None or pot_pos is None:
+                return None
+            return f"Go to onion dispenser at {onion_disp}, pick onion, deliver to pot at {pot_pos}"
+
+        if "pick tomato" in lower or "tomato dispenser" in lower:
+            if tomato_disp is None or pot_pos is None:
+                return None
+            return f"Go to tomato dispenser at {tomato_disp}, pick tomato, deliver to pot at {pot_pos}"
+
+        if any(phrase in lower for phrase in ["drop onion", "place onion", "deliver to pot"]):
+            if pot_pos is None:
+                return None
+            return f"Go to pot at {pot_pos}, interact to drop onion"
+
+        if any(phrase in lower for phrase in ["drop tomato", "place tomato"]):
+            if pot_pos is None:
+                return None
+            return f"Go to pot at {pot_pos}, interact to drop tomato"
+
+        if lower in {"wait", "stay"} or lower.startswith("wait ") or lower.startswith("stay "):
+            return "Move to a non-blocking nearby tile and stay ready to support the other worker."
+
+        return description
+
+    def _pot_is_full_idle(pot_pos) -> bool:
+        if pot_pos is None:
+            return False
+        if not planner_tool_state.state.has_object(pot_pos):
+            return False
+        obj = planner_tool_state.state.get_object(pot_pos)
+        return (
+            obj.name == "soup"
+            and not planner_tool_state.mdp.old_dynamics
+            and not obj.is_cooking
+            and not obj.is_ready
+            and len(obj.ingredients) >= 3
+        )
+
     @tool
     def assign_tasks(
         assignments: str = "",
@@ -225,6 +351,37 @@ def create_planner_tools(
                     f"Task for '{worker_id}' must be a string, got {type(description).__name__}"
                 )
                 continue
+
+            normalized = _canonicalize_assignment(description)
+            if normalized is None:
+                errors.append(
+                    f"Rejected invalid raw-action task for '{worker_id}': {description}"
+                )
+                existing = worker_registry[worker_id].current_task
+                if existing and not existing.completed:
+                    description = existing.description
+                else:
+                    description = (
+                        "Move to a non-blocking nearby tile and stay ready to support "
+                        "the other worker."
+                    )
+            else:
+                description = normalized
+
+            if "start cooking" in description.lower():
+                pot_pos = _extract_pot_target(description)
+                if not _pot_is_full_idle(pot_pos):
+                    errors.append(
+                        f"Rejected invalid start-cooking task for '{worker_id}': pot is not full"
+                    )
+                    existing = worker_registry[worker_id].current_task
+                    if existing and not existing.completed:
+                        description = existing.description
+                    else:
+                        description = (
+                            "Move to a non-blocking nearby tile and stay ready to support "
+                            "the other worker."
+                        )
 
             task = Task(
                 description=description,

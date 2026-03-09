@@ -88,6 +88,62 @@ class WorkerAgent(Agent):
             if self.debug:
                 print(f"  [{self.worker_id}] observability emit failed: {exc}")
 
+    def _guard_invalid_pot_interact(self, state, chosen):
+        """Prevent invalid pot interactions such as starting cooking early."""
+        if chosen != Action.INTERACT:
+            return chosen
+
+        player = state.players[self.agent_index]
+        facing_pos = Action.move_in_direction(player.position, player.orientation)
+        x, y = facing_pos
+        if not (0 <= x < self.mdp.width and 0 <= y < self.mdp.height):
+            return chosen
+        if self.mdp.terrain_mtx[y][x] != "P":
+            return chosen
+
+        held_obj = player.held_object
+        pot_obj = state.get_object(facing_pos) if state.has_object(facing_pos) else None
+
+        if held_obj is None:
+            if (
+                pot_obj is not None
+                and pot_obj.name == "soup"
+                and not self.mdp.old_dynamics
+                and not pot_obj.is_cooking
+                and not pot_obj.is_ready
+                and len(pot_obj.ingredients) < 3
+            ):
+                if self.debug:
+                    print(
+                        f"  [{self.worker_id}] Blocked invalid start-cooking interact at {facing_pos}: "
+                        f"pot only has {len(pot_obj.ingredients)}/3 ingredients"
+                    )
+                return Action.STAY
+            return chosen
+
+        if held_obj.name == "dish":
+            if pot_obj is None or pot_obj.name != "soup" or not pot_obj.is_ready:
+                if self.debug:
+                    print(
+                        f"  [{self.worker_id}] Blocked invalid soup pickup at {facing_pos}: pot is not ready"
+                    )
+                return Action.STAY
+            return chosen
+
+        if held_obj.name in {"onion", "tomato"}:
+            if (
+                pot_obj is not None
+                and pot_obj.name == "soup"
+                and (pot_obj.is_cooking or pot_obj.is_ready or len(pot_obj.ingredients) >= 3)
+            ):
+                if self.debug:
+                    print(
+                        f"  [{self.worker_id}] Blocked invalid ingredient drop at {facing_pos}: pot cannot accept more ingredients"
+                    )
+                return Action.STAY
+
+        return chosen
+
     def action(self, state):
         """Choose an action based on the current task and game state."""
         self.planner.maybe_replan(state)
@@ -138,6 +194,8 @@ class WorkerAgent(Agent):
                 if self.debug:
                     print(f"  [{self.worker_id}] No action chosen, defaulting to STAY")
                 chosen = Action.STAY
+
+            chosen = self._guard_invalid_pot_interact(state, chosen)
 
             if task:
                 task.steps_active += 1
