@@ -37,7 +37,7 @@ def parse_metrics(output):
 def main():
     script_dir = os.path.dirname(os.path.realpath(__file__))
     project_root = os.path.dirname(script_dir)
-    config_dir = os.path.join(project_root, 'configs3')
+    config_dir = os.path.join(project_root, 'configs')
     agent_script_path = os.path.join(script_dir, "run_llm_agent.py")
 
     output_csv = os.path.join(script_dir, "experiment_results.csv")
