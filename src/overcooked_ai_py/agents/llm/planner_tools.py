@@ -238,16 +238,39 @@ def create_planner_tools(
         )
         return bool(primitive_tokens)
 
+    def _is_ambiguous_pot_task(description: str) -> bool:
+        lower = description.lower().strip()
+        if "pot" not in lower:
+            return False
+        meaningful_pot_markers = [
+            "drop onion",
+            "drop tomato",
+            "deliver to pot",
+            "place onion",
+            "place tomato",
+            "start cooking",
+            "collect soup",
+            "pick soup",
+            "ready soup",
+            "with dish",
+        ]
+        return not any(marker in lower for marker in meaningful_pot_markers)
+
     def _canonicalize_assignment(description: str) -> str | None:
         lower = description.lower().strip()
         coords = _extract_coords(description)
+        layout_name = getattr(planner_tool_state.mdp, "layout_name", "")
         pot_pos = _extract_pot_target(description) or _first_coord_with_terrain(coords, {"P"})
         serving_pos = _extract_serving_target(description) or _first_coord_with_terrain(coords, {"S"})
         onion_disp = _first_coord_with_terrain(coords, {"O"})
         tomato_disp = _first_coord_with_terrain(coords, {"T"})
         dish_disp = _first_coord_with_terrain(coords, {"D"})
+        counter_pos = _first_coord_with_terrain(coords, {"X"})
 
         if _looks_like_raw_action_script(description):
+            return None
+
+        if layout_name == "counter_circuit" and _is_ambiguous_pot_task(description):
             return None
 
         if "start cooking" in lower:
@@ -255,34 +278,108 @@ def create_planner_tools(
                 return None
             return f"Go to pot at {pot_pos}, interact to start cooking"
 
-        if "pick dish" in lower or "dish dispenser" in lower:
-            if dish_disp is None:
-                return None
-            return f"Go to dish dispenser at {dish_disp}, pick dish"
-
         if "serve" in lower and pot_pos is not None and serving_pos is not None:
             return (
                 f"Go to pot at {pot_pos}, collect soup with dish, "
                 f"deliver to serving at {serving_pos}"
             )
 
+        if (
+            layout_name == "counter_circuit"
+            and ("pick dish" in lower or "dish dispenser" in lower)
+            and pot_pos is not None
+            and serving_pos is not None
+        ):
+            if dish_disp is not None:
+                return (
+                    f"Go to dish dispenser at {dish_disp}, pick dish, "
+                    f"collect soup from pot at {pot_pos}, deliver to serving at {serving_pos}"
+                )
+            if counter_pos is not None:
+                return (
+                    f"Go to shared counter at {counter_pos}, pick dish, "
+                    f"collect soup from pot at {pot_pos}, deliver to serving at {serving_pos}"
+                )
+
+        if any(phrase in lower for phrase in ["drop dish", "place dish"]):
+            if counter_pos is not None:
+                return f"Go to shared counter at {counter_pos}, interact to drop dish"
+            if serving_pos is not None:
+                return f"Go to serving at {serving_pos}, deliver soup"
+            return None
+
+        if "pick dish" in lower or "dish dispenser" in lower:
+            if dish_disp is not None and counter_pos is not None:
+                return (
+                    f"Go to dish dispenser at {dish_disp}, pick dish, "
+                    f"deliver to shared counter at {counter_pos}"
+                )
+            if dish_disp is not None:
+                return f"Go to dish dispenser at {dish_disp}, pick dish"
+            if counter_pos is not None and pot_pos is not None and serving_pos is not None:
+                return (
+                    f"Go to shared counter at {counter_pos}, pick dish, "
+                    f"collect soup from pot at {pot_pos}, deliver to serving at {serving_pos}"
+                )
+            if counter_pos is not None:
+                return f"Go to shared counter at {counter_pos}, pick dish"
+            return None
+
         if "pick onion" in lower or "onion dispenser" in lower:
-            if onion_disp is None or pot_pos is None:
-                return None
-            return f"Go to onion dispenser at {onion_disp}, pick onion, deliver to pot at {pot_pos}"
+            if onion_disp is not None and pot_pos is not None:
+                return (
+                    f"Go to onion dispenser at {onion_disp}, pick onion, "
+                    f"deliver to pot at {pot_pos}"
+                )
+            if onion_disp is not None and counter_pos is not None:
+                return (
+                    f"Go to onion dispenser at {onion_disp}, pick onion, "
+                    f"deliver to shared counter at {counter_pos}"
+                )
+            if counter_pos is not None and pot_pos is not None:
+                return (
+                    f"Go to shared counter at {counter_pos}, pick onion, "
+                    f"deliver to pot at {pot_pos}"
+                )
+            if onion_disp is not None:
+                return f"Go to onion dispenser at {onion_disp}, pick onion"
+            if counter_pos is not None:
+                return f"Go to shared counter at {counter_pos}, pick onion"
+            return None
 
         if "pick tomato" in lower or "tomato dispenser" in lower:
-            if tomato_disp is None or pot_pos is None:
-                return None
-            return f"Go to tomato dispenser at {tomato_disp}, pick tomato, deliver to pot at {pot_pos}"
+            if tomato_disp is not None and pot_pos is not None:
+                return (
+                    f"Go to tomato dispenser at {tomato_disp}, pick tomato, "
+                    f"deliver to pot at {pot_pos}"
+                )
+            if tomato_disp is not None and counter_pos is not None:
+                return (
+                    f"Go to tomato dispenser at {tomato_disp}, pick tomato, "
+                    f"deliver to shared counter at {counter_pos}"
+                )
+            if counter_pos is not None and pot_pos is not None:
+                return (
+                    f"Go to shared counter at {counter_pos}, pick tomato, "
+                    f"deliver to pot at {pot_pos}"
+                )
+            if tomato_disp is not None:
+                return f"Go to tomato dispenser at {tomato_disp}, pick tomato"
+            if counter_pos is not None:
+                return f"Go to shared counter at {counter_pos}, pick tomato"
+            return None
 
         if any(phrase in lower for phrase in ["drop onion", "place onion", "deliver to pot"]):
             if pot_pos is None:
+                if counter_pos is not None:
+                    return f"Go to shared counter at {counter_pos}, interact to drop onion"
                 return None
             return f"Go to pot at {pot_pos}, interact to drop onion"
 
         if any(phrase in lower for phrase in ["drop tomato", "place tomato"]):
             if pot_pos is None:
+                if counter_pos is not None:
+                    return f"Go to shared counter at {counter_pos}, interact to drop tomato"
                 return None
             return f"Go to pot at {pot_pos}, interact to drop tomato"
 
