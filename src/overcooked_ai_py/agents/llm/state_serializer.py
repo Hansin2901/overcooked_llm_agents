@@ -229,6 +229,11 @@ def _layout_strategy_context(mdp):
                 "This layout is not onion-only: both onion and tomato dispensers exist, and the current orders can require mixed recipes.",
                 "Preferred split: Player 0 feeds needed ingredients and can finish nearby deliveries, while Player 1 manages dish pickup, pot interactions, cooking starts, and soup collection on the top side.",
                 "Use counters for staging and pipeline work. Do not send both workers on long laps unless the order state truly requires it.",
+                "Do not assign dish pickup too early on this layout. A worker should fetch a dish only when a soup is ready or will be ready very soon.",
+                "If one worker is already on ingredient duty, the other worker should help finish the active soup cycle rather than idling on a dish-only task.",
+                "When a soup is close to ready, assign the full serving chain in one task: pick dish, collect soup from the ready pot, and deliver to serving.",
+                "Do not keep reissuing a dish-dispenser-only task while the pot still needs more ingredients or while another worker is already holding a dish.",
+                "Do not assign a bare task like 'go to pot' or 'wait at pot'. Every pot task must say why: drop ingredient, start cooking, collect soup with dish, or wait for ready soup.",
             ]
         )
     else:
