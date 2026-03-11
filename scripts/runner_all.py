@@ -55,7 +55,7 @@ def main():
     print(f"Found {len(config_files)} configuration files to run.")
 
     # Create CSV and header
-    with open(output_csv, "w", newline="") as csvfile:
+    with open(output_csv, "a", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow([
             "config",
@@ -124,8 +124,9 @@ def main():
                 print(f"Finished {config_file}")
                 print(f"Reward={total_reward}, Steps={steps}, Time={elapsed}s")
 
+
             except subprocess.CalledProcessError as e:
-                print(f"Error running {config_file}: {e.returncode}")
+                print(f"Error running {config_file}: {e.returncode} {e.stderr} {e.stdout} {e.output}")
             except Exception as e:
                 print(f"Unexpected error with {config_file}: {e}")
 

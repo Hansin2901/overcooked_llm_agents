@@ -181,14 +181,14 @@ class LLMAgent(Agent):
             # Update tool context
             set_state(state, self.agent_index)
 
-            # Build history text
-            history_text = self._format_history()
+            # # Build history text
+            # history_text = self._format_history()
 
-            # Construct prompt with history
-            if history_text:
-                prompt = f"{history_text}\n\nCurrent game state:\n{state_text}\n\nDecide your action."
-            else:
-                prompt = f"Current game state:\n{state_text}\n\nDecide your action."
+            # # Construct prompt with history
+            # if history_text:
+            #     prompt = f"{history_text}\n\nCurrent game state:\n{state_text}\n\nDecide your action."
+            # else:
+            prompt = f"Current game state:\n{state_text}\n\nDecide your action."
 
             # Run LangGraph agent
             from langchain_core.messages import HumanMessage, SystemMessage

@@ -176,7 +176,17 @@ def main():
             observability=hub,
             invoke_config=invoke_config,
         )
-        partner = make_greedy_partner(mdp)
+
+        partner = LLMAgent(
+            model_name=model,
+            debug=args.debug,
+            horizon=args.horizon,
+            api_base=api_base,
+            api_key=api_key,
+            observability=hub,
+            invoke_config=invoke_config,
+        )
+        
         agent_pair = AgentPair(llm_agent, partner)
 
         # Reset environment and agents
